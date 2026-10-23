@@ -311,6 +311,12 @@ uses [Semantic Versioning](https://semver.org/).
   button sits on the Departure label's line, and the section opens under
   the Departure time, where a departure is chosen. Closed, it takes no
   room, so Find Route stays where it was.
+- **The map opens on the boat every time.** It opened on the boat's
+  Signal K position only on a browser's first visit; after that it opened
+  where it was left last, which can be an ocean away from the boat. Now
+  the first position fix of every load centres the map on the boat,
+  keeping the saved zoom. A map the user moved before that fix stays
+  where it is, and without a position the saved view stays.
 
 ## [0.2.1-beta.1] - 2026-10-29
 
