@@ -456,7 +456,9 @@ function _clearRouteTime() {
   if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
 }
 
-function _loadRouteJob(id, given) {
+// `computed`: a route that has just finished computing (resumed after a reload), not one opened from Saved: no
+// "Recompute?" banner.
+function _loadRouteJob(id, given, { computed = false } = {}) {
   if (!id) return;
   const job = given || routeHistoryItems.find(j => j.id === id);
   if (job && (job.status === 'running' || job.status === 'queued')) {
@@ -496,7 +498,7 @@ function _loadRouteJob(id, given) {
       routeActive = true;
       _routeStale = false;
       updatePlanHint();
-      _askRecompute(job);
+      if (!computed) _askRecompute(job);
       _fitRouteInView();
       showTab('itinerarySection');
     })
@@ -2302,9 +2304,13 @@ let _activeJobId = null;
 function _closeJobStream() {
   if (_activeJobES) { try { _activeJobES.close(); } catch (_) {} _activeJobES = null; }
 }
+// localStorage: the route job this browser is following until it ends, so a reload (or the window closed and opened
+// again) picks it up: the job runs on the server either way (_resumeComputing).
+const _COMPUTING_KEY = 'rp:computingJob';
 function _computeUiIdle() {
   _routeComputing = false;
   _activeJobId = null;
+  try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
   const btn = document.getElementById('findRoute');
   btn.textContent = 'Find Route';
   cancelBtn.style.display = 'none';
@@ -2332,6 +2338,7 @@ function attachToJob(id, jobRow) {
   if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
+  try { localStorage.setItem(_COMPUTING_KEY, id); } catch (_) { /* not remembered */ }
   const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
   btn.disabled = true;
@@ -2545,6 +2552,25 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
       showTab('logSection');
     });
 });
+
+// A route this browser was following when the page went (reloaded, or the window closed and opened again): still
+// computing, the page follows it again, with the progress in Find Route's place; finished meanwhile, it is shown;
+// failed, cancelled or gone, it is forgotten. Only this browser's own: a job another device started stays there.
+(function _resumeComputing() {
+  let id = null;
+  try { id = localStorage.getItem(_COMPUTING_KEY); } catch (_) { /* nothing remembered */ }
+  if (!id) return;
+  const forget = () => { try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ } };
+  authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))))
+    .then(job => {
+      if (_activeJobId) return;   // a route started meanwhile
+      if (job.status === 'queued' || job.status === 'running') { attachToJob(id, job); return; }
+      forget();
+      if (job.status === 'done') _loadRouteJob(id, job, { computed: true });
+    })
+    .catch(err => { if (err.status === 404) forget(); });   // otherwise kept: the server may be busy or out of reach
+})();
 
 cancelBtn.addEventListener('click', () => {
   if (!_activeJobId) return;
@@ -3613,10 +3639,15 @@ function _winOpen(jobId) {
       .catch(err => appendLog('Cancel failed: ' + err.message, 'error'));
   });
   window.addEventListener('rp:units', () => { if (_win) _winRender(); });
-  // The newest window, if any: shown again (and followed while it runs).
+  // The newest window, if any: shown again (and followed while it runs). Still running, its section opens: closed,
+  // the page looked idle after a reload while the departures were computing.
   authFetch(API + '/windows?limit=1', { cache: 'no-store' }, null)
     .then(r => (r.ok ? r.json() : []))
-    .then(list => { if (Array.isArray(list) && list.length) _winPoll(list[0].id); })
+    .then(list => {
+      if (!Array.isArray(list) || !list.length) return;
+      if (list[0].status === 'running') /** @type {HTMLDetailsElement} */ (document.getElementById('windowSection')).open = true;
+      _winPoll(list[0].id);
+    })
     .catch(() => { /* none: nothing to show */ });
 })();
 
