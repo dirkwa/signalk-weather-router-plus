@@ -28,8 +28,8 @@ uses [Semantic Versioning](https://semver.org/).
   Signal K position only on a browser's first visit; after that it opened
   where it was left last, which can be an ocean away from the boat. Now
   the first position fix of every load centres the map on the boat,
-  keeping the saved zoom. A map the user moved before that fix stays
-  where it is, and without a position the saved view stays.
+  keeping the saved zoom. A map the user panned or zoomed before that
+  fix stays as it is, and without a position the saved view stays.
 
 ## [0.2.0-beta.3] - 2026-10-22
 

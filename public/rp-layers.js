@@ -1901,14 +1901,16 @@ export const map = new ol.Map({
 // The view is saved on every move, so the zoom carries over and the
 // start view stands in while Signal K has no position. OL fires moveend
 // after the first render too; that one is not a move, and saving it would
-// keep the default view on a first visit.
+// keep the default view on a first visit. A zoom is a move: the zoom
+// buttons keep the centre (PR #70 review).
 let _autoCentreOnVessel = true;   // until the first Signal K fix, or the map moves
 const _startCenter = map.getView().getCenter();
+const _startZoom = map.getView().getZoom();
 map.on('moveend', function() {
   const v = map.getView();
   const c = v.getCenter();
   if (_autoCentreOnVessel) {
-    if (c[0] === _startCenter[0] && c[1] === _startCenter[1]) return;
+    if (c[0] === _startCenter[0] && c[1] === _startCenter[1] && v.getZoom() === _startZoom) return;
     _autoCentreOnVessel = false;
   }
   const [lon, lat] = ol.proj.toLonLat(c);
