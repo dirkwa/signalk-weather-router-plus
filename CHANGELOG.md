@@ -31,6 +31,12 @@ uses [Semantic Versioning](https://semver.org/).
   buttons, routes and the map still download. Without signalk-internet
   nothing changes. signalk-internet is recommended in the App Store
   (`signalk.recommends`).
+- **An (i) beside Effort.** It opens the routers page at a new Effort
+  section: what Normal, Moderate and Maximum set (stages, cross-track
+  bins, headings), what each cost and gained on the measured requests,
+  and which to pick. Its only explanation was the label's tooltip, which
+  a touch screen never shows. The page and README now call the choice
+  Effort, as the Route tab does, instead of Method.
 
 ### Changed
 
