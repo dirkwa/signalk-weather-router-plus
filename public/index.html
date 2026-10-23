@@ -281,9 +281,13 @@
   @keyframes rp-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
   .rp-label { font-size: var(--f-sm); color: var(--text-2); margin-top: var(--s-1); display: flex; justify-content: space-between; gap: var(--s-2); }
   .rp-label .rp-phase { color: var(--text); font-weight: 600; }
-  /* One line, so the box keeps its height while the text changes (it is scrolled into view once, at the start). */
+  /* One line while the route runs, so the box keeps its height while the text changes (it is scrolled into view once,
+     at the start). A failure's message wraps instead: nothing changes the box after it, and it is said whole, inside
+     the box (PR #71 review). */
   .rp-label .rp-sub { flex: 1 1 auto; min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .rp-label .rp-phase, .rp-label .rp-elapsed { flex: none; white-space: nowrap; }
+  .rp-label .rp-phase { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rp-label .rp-elapsed { flex: none; white-space: nowrap; }
+  .rp-label.failed .rp-phase { white-space: normal; overflow-wrap: anywhere; }
   .rp-label.failed .rp-phase { color: var(--danger); }
   .rp-label.done .rp-phase { color: var(--tack-starboard); }
   /* Best departure: the departures compared (rp-plan.js). */
