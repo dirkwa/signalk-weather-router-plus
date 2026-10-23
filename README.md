@@ -455,10 +455,12 @@ computed with what that request says, not with the user's saved Setup.
   never shows): when its run was published, when the next is due, and
   when it was last checked and what that found (the newest run is in use,
   a new run was loaded, the server could not be asked, or the new run
-  could not be loaded). Under the list, how often the plugin checks every
-  source (*Check for a new cycle every*, Defaults) and **Check now**,
-  which starts that check at once (`POST /api/forecast/refresh`, as
-  Log → Forecast data's **Refresh forecast**). Sources and
+  could not be loaded). Under the list, what the colours mean, how often
+  the plugin checks every source (*Check for a new cycle every*,
+  Defaults) and **Check now**, which starts that check at once
+  (`POST /api/forecast/refresh`, as Log → Forecast data's **Refresh
+  forecast**); while ECMWF is being checked it says so, with the time it
+  began, and Check now waits. Sources and
   when their runs are due: ECMWF at its measured publication times (see
   [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill
   per product loaded; where no product covers the vessel, the currents row

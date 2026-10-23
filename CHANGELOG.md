@@ -18,8 +18,10 @@ uses [Semantic Versioning](https://semver.org/).
   under Log → Forecast data. A tap anywhere on the collapsed header line
   now opens the list. Under each source it says, as text, when the run
   was published, when the next is due, and when it was last checked and
-  what that found; under the list, how often the plugin checks, with
-  **Check now**.
+  what that found; under the list, what the colours mean, how often the
+  plugin checks, and **Check now**, which says when a check is under way.
+  The pills redraw when the units arrive, so they no longer read
+  "— old" until the next status.
 
 ### Changed
 
