@@ -1188,11 +1188,24 @@ function _freshDetail(name) {
   ].filter(Boolean);
   return parts.length ? '<div class="fresh-detail">' + escapeHtml(parts.join(' · ')) + '</div>' : '';
 }
-function _checkLine() {
+// What the pills' colours mean (as freshness.ts sets them), once under the list.
+const _FRESH_LEGEND = '<div class="fresh-legend">'
+  + '<span class="fresh fresh-green">●</span> no newer run due yet · '
+  + '<span class="fresh fresh-orange">●</span> a newer run is due about now (from 30 min before until an hour after) · '
+  + '<span class="fresh fresh-red">●</span> more than an hour late, or nothing loaded</div>';
+function _checkLine(s) {
   const every = _checkEveryS ? 'The plugin checks every source every ' + _fmt(_checkEveryS, 'time') + ' (Defaults → Forecast). ' : '';
-  return '<div class="ds-check">' + escapeHtml(every)
-    + '<button type="button" class="ds-check-now" title="Check every source for a newer run now">Check now</button>'
-    + (_checkNowNote ? ' <span class="ds-check-note">' + escapeHtml(_checkNowNote) + '</span>' : '') + '</div>';
+  // A check or a new run already under way: said here, and Check now waits for it (another request would only queue).
+  const l = s.forecast_loading;
+  const busy = l && l.phase === 'checking'
+    ? 'Checking ECMWF for a newer run' + (l.started_at ? ' since ' + _clockText(l.started_at) : '') + '…'
+    : l && l.phase === 'decoding' ? 'A new run is loading (below).' : '';
+  return _FRESH_LEGEND + '<div class="ds-check">' + escapeHtml(every)
+    + (busy
+      ? '<button type="button" class="ds-check-now" disabled>Checking…</button> <span class="ds-check-note">' + escapeHtml(busy) + '</span>'
+      : '<button type="button" class="ds-check-now" title="Check every source for a newer run now">Check now</button>'
+        + (_checkNowNote ? ' <span class="ds-check-note">' + escapeHtml(_checkNowNote) + '</span>' : ''))
+    + '</div>';
 }
 function _loadCheckEvery() {
   // Plain fetch, as the Defaults tab reads it: a refusal here is no reason for the page-wide sign-in.
@@ -1212,7 +1225,7 @@ function _checkNow() {
   authFetch(API + '/forecast/refresh', { method: 'POST' }, null)
     .then(r => (r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t)))))
     .then(() => {
-      note('asked: the list shows what the check found when it is done');
+      note('asked: the check is under way, and each source says what it found when it is done');
       setTimeout(loadPluginStatus, 4000);
       setTimeout(loadPluginStatus, 15000);
     })
@@ -1354,7 +1367,7 @@ function _statusLine(s) {
       + row('currents', currents.length ? currents : ['none here'])
       + row('tides', [tides])
       + (s.jobs ? '<span class="statusKey">jobs</span> ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
-      + _checkLine();
+      + _checkLine(s);
   return body
     + _processingLine(s)
     + _lateLine()
@@ -1473,6 +1486,8 @@ export function loadPluginStatus() {
 loadPluginStatus();
 setInterval(loadPluginStatus, 30000);
 if (!_statusCollapsed) _loadCheckEvery();   // the list was left open: its check line names the interval too
+// The units (or the ship's time zone) arrived after the status: the pills read "— old" until the next status, 30 s on.
+window.addEventListener('rp:units', redrawStatusLine);
 loadShipTime();
 setInterval(loadShipTime, 600000);
 document.getElementById('refreshForecast').addEventListener('click', function() {
