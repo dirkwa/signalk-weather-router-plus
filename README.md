@@ -439,7 +439,8 @@ computed with what that request says, not with the user's saved Setup.
   min sail speed and limits in the same store ([In Freeboard-SK](#in-freeboard-sk)).
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
-  per source in its colour, with **Show** on the right. Expanded (**Hide**
+  per source in its colour, with **Show** on the right; a tap or click
+  anywhere on the line opens it too. Expanded (**Hide**
   folds it again; the choice is kept in the browser): a *Data sources*
   title, then each row (wind, waves, currents, tides) with one line per
   source: wind the ECMWF run and any regional model, waves the ECMWF run,
@@ -449,8 +450,15 @@ computed with what that request says, not with the user's saved Setup.
   view)*. Each source carries a pill with its run's age, coloured by its
   own publication cadence: **green** until 30 minutes before its next run
   is due, **orange** from then until an hour after, **red** after that
-  (the old run still in use) or when nothing is loaded; hover a pill for
-  the run, when it was published and when the next is due. Sources and
+  (the old run still in use) or when nothing is loaded. Under each source
+  the same as text (a pill's tooltip has it too, which a touch screen
+  never shows): when its run was published, when the next is due, and
+  when it was last checked and what that found (the newest run is in use,
+  a new run was loaded, the server could not be asked, or the new run
+  could not be loaded). Under the list, how often the plugin checks every
+  source (*Check for a new cycle every*, Defaults) and **Check now**,
+  which starts that check at once (`POST /api/forecast/refresh`, as
+  Log → Forecast data's **Refresh forecast**). Sources and
   when their runs are due: ECMWF at its measured publication times (see
   [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill
   per product loaded; where no product covers the vessel, the currents row

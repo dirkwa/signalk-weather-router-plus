@@ -12,6 +12,14 @@ uses [Semantic Versioning](https://semver.org/).
   `progress` items, every `summary` field and the `links`, with which fields
   are always present; and the answers of `GET /api/windows` and
   `GET /api/windows/{id}`. Nothing else in the document changes.
+- **The data sources say how fresh they are on a touch screen too.**
+  When a run was published and the next is due were only in a pill's
+  tooltip, which a touch screen never shows, and Refresh forecast was
+  under Log → Forecast data. A tap anywhere on the collapsed header line
+  now opens the list. Under each source it says, as text, when the run
+  was published, when the next is due, and when it was last checked and
+  what that found; under the list, how often the plugin checks, with
+  **Check now**.
 
 ### Changed
 
