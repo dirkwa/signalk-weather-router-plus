@@ -2345,11 +2345,14 @@ function _backToEarlierRoute() {
   _currentRouteName = shown ? _jobBeforeAttach.name : '';
   _jobBeforeAttach = null;
 }
+// Counts the attachments: an answer meant for an earlier one, even of the same job, is dropped (_jobOnError).
+let _attachSeq = 0;
 function attachToJob(id, jobRow) {
   // A reconnect to the same job keeps what was on the map before it.
   if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
+  _attachSeq++;
   try { localStorage.setItem(_COMPUTING_KEY, id); } catch (_) { /* not remembered */ }
   const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
@@ -2521,9 +2524,10 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
-    // The answer acts only while this job is still the one followed: one attached meanwhile (from Saved) keeps its
-    // progress, Cancel and remembered id.
-    const current = () => _activeJobId === id;
+    // The answer acts only while this attachment is still the one followed: another attached meanwhile (from Saved,
+    // even of this same job) keeps its progress, Cancel and remembered id.
+    const seq = _attachSeq;
+    const current = () => _activeJobId === id && _attachSeq === seq;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
