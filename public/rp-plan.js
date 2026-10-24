@@ -2591,15 +2591,16 @@ function _jobOnError(job, ev) {
     const seq = _attachSeq;
     const current = () => _activeJobId === id && _attachSeq === seq;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+      .then(r => r.ok ? r.json() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status })))
       .then(j => {
         if (!current()) return;
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(true); RouteProgress.hide(); _loadRouteJob(id, j, { computed: true }); }
         else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => { if (current()) attachToJob(id, j); }, 2000); }
         else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
-      // Its status unknown (the server out of reach, or a sign-in asked for): still remembered, for a reload to find.
-      .catch(e => { if (!current()) return; appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(true); });
+      // Its status unknown (the server out of reach, or a sign-in asked for): still remembered, for a reload to find. A
+      // 404 says the job is gone: forgotten.
+      .catch(e => { if (!current()) return; appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(e.status !== 404); });
   } else {
     appendLog('(event stream interrupted — reconnecting)', 'error');
   }
