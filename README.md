@@ -489,8 +489,9 @@ computed with what that request says, not with the user's saved Setup.
   the plugin checks every source (*Check for a new cycle every*,
   Defaults) and **Check now**, which starts that check at once
   (`POST /api/forecast/refresh`, as Log → Forecast data's **Refresh
-  forecast**). It is off from the tap until the status shows the check
-  over, so a second tap asks for no second round; while ECMWF is being
+  forecast**). It is off from the tap until every source has been checked
+  since (at most ten minutes), so a second tap asks for no second round;
+  while ECMWF is being
   checked it says so, with the time it began. When the first forecast
   could not be loaded, that error line offers Check now too. Sources and
   when their runs are due: ECMWF at its measured publication times (see
