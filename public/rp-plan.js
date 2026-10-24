@@ -456,8 +456,8 @@ function _clearRouteTime() {
   if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
 }
 
-// `computed`: a route that has just finished computing (resumed after a reload), not one opened from Saved: no
-// "Recompute?" banner.
+// `computed`: a route that has just finished computing (resumed after a reload, or its stream lost), not one opened
+// from Saved: no "Recompute?" banner, and the job stays remembered for a reload until its route has loaded.
 function _loadRouteJob(id, given, { computed = false } = {}) {
   if (!id) return;
   const job = given || routeHistoryItems.find(j => j.id === id);
@@ -469,8 +469,9 @@ function _loadRouteJob(id, given, { computed = false } = {}) {
   _currentRouteJobId = id;
   _currentRouteName = job && job.request ? (job.request.name || '') : '';
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
-    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(Object.assign(new Error(t), { status: r.status }))))
     .then(geojson => {
+      if (computed) _forgetComputing(id);
       // Another route opened while this body was still being read (the channel cancels only the request): dropped.
       if (_currentRouteJobId !== id) return;
       if (_displayedJobId !== id) _clearRouteTime();
@@ -503,6 +504,9 @@ function _loadRouteJob(id, given, { computed = false } = {}) {
       showTab('itinerarySection');
     })
     .catch(err => {
+      // Forgotten when the server answered no or another route was opened; a request cut off by a reload, or the
+      // server out of reach, keeps it.
+      if (computed && (err.status || _currentRouteJobId !== id)) _forgetComputing(id);
       if (_currentRouteJobId !== id) return;   // another route was opened meanwhile
       console.error('Failed to load route:', err);
       const st = document.getElementById('status');
@@ -2307,10 +2311,16 @@ function _closeJobStream() {
 // localStorage: the route job this browser is following until it ends, so a reload (or the window closed and opened
 // again) picks it up: the job runs on the server either way (_resumeComputing).
 const _COMPUTING_KEY = 'rp:computingJob';
-function _computeUiIdle() {
+// The job left behind: forgotten, unless another one has been remembered in its place.
+function _forgetComputing(id) {
+  try { if (localStorage.getItem(_COMPUTING_KEY) === id) localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
+}
+// `finished`: the job is done and its route still loading. It stays remembered until the route has loaded, so a
+// reload in between still shows it (_jobOnDone and _loadRouteJob forget it then).
+function _computeUiIdle(finished = false) {
   _routeComputing = false;
   _activeJobId = null;
-  try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
+  if (!finished) try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
   const btn = document.getElementById('findRoute');
   btn.textContent = 'Find Route';
   cancelBtn.style.display = 'none';
@@ -2447,11 +2457,12 @@ function _jobOnDone(job, d) {
   statusEl.textContent = '';
   RouteProgress.done(elapsed);
   routeActive = true;
-  _computeUiIdle();
+  _computeUiIdle(true);
   // Fetch the route GeoJSON separately (SSE is not for large payloads).
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
-    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(Object.assign(new Error(t), { status: r.status }))))
     .then(geojson => {
+      _forgetComputing(id);
       // An answer for a job no longer current (a newer request started while this body was still being read: the
       // 'route-load' channel cancels only the request, not the body read; PR #40 review) is dropped.
       if (_currentRouteJobId !== id) return;
@@ -2467,6 +2478,9 @@ function _jobOnDone(job, d) {
       showTab('itinerarySection');
     })
     .catch(err => {
+      // Forgotten when the server answered no or another route was opened; a request cut off by a reload, or the
+      // server out of reach, keeps it.
+      if (err.status || _currentRouteJobId !== id) _forgetComputing(id);
       if (_currentRouteJobId !== id) return;   // a job no longer current: the route shown is another's
       // No route is shown after all (PR #39 review): the hint and the stale check must not act on one.
       routeActive = false;
@@ -2508,7 +2522,7 @@ function _jobOnError(job, ev) {
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
-        if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
+        if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(true); RouteProgress.hide(); _loadRouteJob(id, j, { computed: true }); }
         else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
         else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
@@ -2560,16 +2574,18 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
   let id = null;
   try { id = localStorage.getItem(_COMPUTING_KEY); } catch (_) { /* nothing remembered */ }
   if (!id) return;
-  const forget = () => { try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ } };
+  const shownBefore = _currentRouteJobId;
   authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
     .then(r => (r.ok ? r.json() : Promise.reject(Object.assign(new Error('HTTP ' + r.status), { status: r.status }))))
     .then(job => {
-      if (_activeJobId) return;   // a route started meanwhile
+      // A route started, or one opened from Saved or a window, meanwhile: that one stays, and this job is forgotten
+      // (a route started meanwhile is remembered in its place).
+      if (_activeJobId || _currentRouteJobId !== shownBefore) { _forgetComputing(id); return; }
       if (job.status === 'queued' || job.status === 'running') { attachToJob(id, job); return; }
-      forget();
-      if (job.status === 'done') _loadRouteJob(id, job, { computed: true });
+      if (job.status === 'done') _loadRouteJob(id, job, { computed: true });   // forgotten once its route has loaded
+      else _forgetComputing(id);
     })
-    .catch(err => { if (err.status === 404) forget(); });   // otherwise kept: the server may be busy or out of reach
+    .catch(err => { if (err.status === 404) _forgetComputing(id); });   // otherwise kept: the server may be busy or out of reach
 })();
 
 cancelBtn.addEventListener('click', () => {
