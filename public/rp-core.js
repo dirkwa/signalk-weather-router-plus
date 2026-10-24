@@ -1164,6 +1164,10 @@ let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollaps
 let _checks = {};          // status `checks` of the last status
 let _checkEveryS = null;   // forecast.refreshInterval from /api/settings, read when the list opens
 let _checkNowNote = '';    // what Check now did, kept across the status redraws for a minute
+// Check now is off from the tap until a status fetched after the server took the request shows no check under way. A
+// second request once a round has started queues a whole round more (worker/refreshqueue.ts merges only one waiting).
+let _checkAsking = false;
+let _checkTakenAt = 0;     // when the server answered the request (Date.now()); 0 while it has not
 const _CHECK_SAID = {
   newest: 'the newest run is in use',
   'new-run': 'a new run was loaded',
@@ -1200,12 +1204,18 @@ function _checkLine(s) {
   const busy = l && l.phase === 'checking'
     ? 'Checking ECMWF for a newer run' + (l.started_at ? ' since ' + _clockText(l.started_at) : '') + '…'
     : l && l.phase === 'decoding' ? 'A new run is loading (below).' : '';
-  return _FRESH_LEGEND + '<div class="ds-check">' + escapeHtml(every)
+  return '<div class="ds-check">' + escapeHtml(every)
     + (busy
       ? '<button type="button" class="ds-check-now" disabled>Checking…</button> <span class="ds-check-note">' + escapeHtml(busy) + '</span>'
-      : '<button type="button" class="ds-check-now" title="Check every source for a newer run now">Check now</button>'
+      : '<button type="button" class="ds-check-now" title="Check every source for a newer run now"' + (_checkAsking ? ' disabled' : '') + '>Check now</button>'
         + (_checkNowNote ? ' <span class="ds-check-note">' + escapeHtml(_checkNowNote) + '</span>' : ''))
     + '</div>';
+}
+// A status fetched at `fetchedAt` (Date.now() when it was asked for): Check now is on again once one asked for after the
+// server took the request shows no check under way (a check running is then said by the busy line instead).
+function _checkSettled(s, fetchedAt) {
+  const l = s.forecast_loading;
+  if (_checkAsking && _checkTakenAt && fetchedAt >= _checkTakenAt && !(l && l.phase === 'checking')) _checkAsking = false;
 }
 function _loadCheckEvery() {
   // Plain fetch, as the Defaults tab reads it: a refusal here is no reason for the page-wide sign-in.
@@ -1220,17 +1230,22 @@ function _loadCheckEvery() {
 let _checkNoteTimer = null;
 function _checkNow() {
   const note = t => { _checkNowNote = t; redrawStatusLine(); };
+  if (_checkAsking) return;
+  _checkAsking = true;
+  _checkTakenAt = 0;
   clearTimeout(_checkNoteTimer);
   note('asking…');
   authFetch(API + '/forecast/refresh', { method: 'POST' }, null)
     .then(r => (r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t)))))
     .then(() => {
+      _checkTakenAt = Date.now();
       note('asked: the check is under way, and each source says what it found when it is done');
       setTimeout(loadPluginStatus, 4000);
       setTimeout(loadPluginStatus, 15000);
     })
-    .catch(err => note('could not ask: ' + err.message))
-    .finally(() => { _checkNoteTimer = setTimeout(() => note(''), 60000); });
+    .catch(err => { _checkAsking = false; note('could not ask: ' + err.message); })
+    // The note goes after a minute, and the button is on again then whatever the statuses said.
+    .finally(() => { _checkNoteTimer = setTimeout(() => { _checkAsking = false; note(''); }, 60000); });
 }
 function _freshPill(name) {
   const f = _fresh.get(name);
@@ -1321,8 +1336,9 @@ function _statusLine(s) {
   _checks = s.checks || {};
   const detail = name => (_statusCollapsed ? '' : _freshDetail(name));
   if (s.starting) return '<span class="warn">' + unitTextHtml(s.starting) + '</span>';
+  // No forecast after a failed first load: Check now there too, to try again.
   if (!f) return s.forecast_error && !s.forecast_loading
-    ? '<span class="warn">no forecast loaded</span>: ' + unitTextHtml(s.forecast_error)
+    ? '<span class="warn">no forecast loaded</span>: ' + unitTextHtml(s.forecast_error) + _checkLine(s)
     : '<span class="warn">loading the forecast</span> (see below)';
   const area = _area();
   const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>' + _freshPill('ECMWF') + detail('ECMWF');
@@ -1367,7 +1383,7 @@ function _statusLine(s) {
       + row('currents', currents.length ? currents : ['none here'])
       + row('tides', [tides])
       + (s.jobs ? '<span class="statusKey">jobs</span> ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
-      + _checkLine(s);
+      + _FRESH_LEGEND + _checkLine(s);
   return body
     + _processingLine(s)
     + _lateLine()
@@ -1450,10 +1466,12 @@ export function oneOpenAtATime(container) {
 export function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
   const fi = document.getElementById('forecastInfo');
+  const fetchedAt = Date.now();
   return authFetch(API + '/status', { cache: 'no-store' }, 'status')
     .then(r => r.json())
     .then(s => {
       _lastStatus = s;
+      _checkSettled(s, fetchedAt);
       window.dispatchEvent(new CustomEvent('rp:status', { detail: s }));
       if (el) el.innerHTML = _statusLine(s);
       const net = document.getElementById('netStatus');
