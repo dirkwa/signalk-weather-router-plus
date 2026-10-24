@@ -2315,12 +2315,14 @@ const _COMPUTING_KEY = 'rp:computingJob';
 function _forgetComputing(id) {
   try { if (localStorage.getItem(_COMPUTING_KEY) === id) localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
 }
-// `finished`: the job is done and its route still loading. It stays remembered until the route has loaded, so a
-// reload in between still shows it (_jobOnDone and _loadRouteJob forget it then).
-function _computeUiIdle(finished = false) {
+// The job followed ends here: it is forgotten (if it is still the one remembered) unless `keep`. Kept: it is done and
+// its route still loading (_jobOnDone and _loadRouteJob forget it once the route has loaded), or its status could not
+// be read, so a reload in between can still find it.
+function _computeUiIdle(keep = false) {
+  const id = _activeJobId;
   _routeComputing = false;
   _activeJobId = null;
-  if (!finished) try { localStorage.removeItem(_COMPUTING_KEY); } catch (_) { /* not remembered */ }
+  if (!keep && id) _forgetComputing(id);
   const btn = document.getElementById('findRoute');
   btn.textContent = 'Find Route';
   cancelBtn.style.display = 'none';
@@ -2519,14 +2521,19 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
+    // The answer acts only while this job is still the one followed: one attached meanwhile (from Saved) keeps its
+    // progress, Cancel and remembered id.
+    const current = () => _activeJobId === id;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
+        if (!current()) return;
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(true); RouteProgress.hide(); _loadRouteJob(id, j, { computed: true }); }
-        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
+        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => { if (current()) attachToJob(id, j); }, 2000); }
         else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
-      .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
+      // Its status unknown (the server out of reach, or a sign-in asked for): still remembered, for a reload to find.
+      .catch(e => { if (!current()) return; appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(true); });
   } else {
     appendLog('(event stream interrupted — reconnecting)', 'error');
   }
