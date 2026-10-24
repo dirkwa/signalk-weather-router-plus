@@ -1113,10 +1113,18 @@ let _fresh = new Map();   // source name → freshness entry of the last status
 function _clockText(iso) {
   return iso ? fmtClock(new Date(iso), { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : '';
 }
-// The pill's words: the run's age, "loaded" for a fixed table, "none" when nothing is loaded.
+// The pill's words: the run's age, "loaded" for a fixed table, "none" when nothing is loaded; after the age, in brackets,
+// when the next run is due (freshness `next_due_at`), so the line says when to look again.
 function _freshText(f) {
   const age = f.published_at ? Math.max(0, (Date.now() - Date.parse(f.published_at)) / 1000) : null;
-  return f.state === 'red' && !f.run ? 'none' : age === null ? 'loaded' : _fmt(age, 'time') + ' old';
+  return f.state === 'red' && !f.run ? 'none' : age === null ? 'loaded' : _fmt(age, 'time') + ' old' + _nextText(f);
+}
+// " (next in 2 h)" before it is due; once due, " (expected now)", or red, " (1.5 h late)"; nothing without a due time.
+function _nextText(f) {
+  const due = f.next_due_at ? Date.parse(f.next_due_at) : NaN;
+  if (!Number.isFinite(due)) return '';
+  const s = (due - Date.now()) / 1000;
+  return s > 0 ? ' (next in ' + _fmt(s, 'time') + ')' : f.state === 'red' ? ' (' + _fmt(-s, 'time') + ' late)' : ' (expected now)';
 }
 // The header's sources list collapsed to one line of dots (remembered in this browser).
 let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollapsed') !== 'false'; } catch (_) { return true; } })();

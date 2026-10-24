@@ -22,7 +22,10 @@ uses [Semantic Versioning](https://semver.org/).
   plugin checks, and **Check now**, which says when a check is under way
   and asks once per check (the error line offers it too when the first
   forecast could not be loaded).
-  The pills redraw when the units arrive, so they no longer read
+  Each pill says, in brackets after the age, when the next run is due:
+  *10.2 hour old (next in 2.3 hour)*, *(expected now)* once it is due,
+  *(1.5 hour late)* when red; the Freeboard panel's pills too (in whole
+  hours). The pills redraw when the units arrive, so they no longer read
   "— old" until the next status.
 
 ### Changed
