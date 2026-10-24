@@ -1905,7 +1905,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `vessel.under_keel_clearance_m` | number | m | setting (0.5) | 0..3; charted depth on chart-mesh legs must be at least the draught plus this |
 | `vessel.overhead_clearance_m` | number | m | setting (2) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
 | `router` | `"standard"` or `"refined"` | | setting `routing.router` (`standard`) | the [open-water router](#open-water-router-standard-or-refined) |
-| `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Effort*): `normal` = the routing settings as they are; `moderate` = stages 40, 100 cross-track bins, headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 150 bins, ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
+| `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Effort*): `normal` = the routing settings as they are; `moderate` = stages 40, 200 cross-track bins (subsectors 100), headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 300 bins (subsectors 150), ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
 
 `vessel.polar` is a token from `GET /api/polars`. A file name such as
 `a_boat.pol` resolves only inside the polar library (the configured
