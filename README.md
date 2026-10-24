@@ -477,8 +477,10 @@ computed with what that request says, not with the user's saved Setup.
   published), then the job queue. A source that does not cover the
   route on the map (or the map view when there is none) is listed all
   the same, marked *(not in this
-  view)*. Each source carries a pill with its run's age, coloured by its
-  own publication cadence: **green** until 30 minutes before its next run
+  view)*. Each source carries a pill with its run's age and, in brackets,
+  when its next run is due (*10.2 hour old (next in 2.3 hour)*; once due
+  *(expected now)*, more than an hour after that *(1.5 hour late)*),
+  coloured by its own publication cadence: **green** until 30 minutes before its next run
   is due, **orange** from then until an hour after, **red** after that
   (the old run still in use) or when nothing is loaded. Under each source
   the same as text (a pill's tooltip has it too, which a touch screen
@@ -870,8 +872,9 @@ forecast hour from one place, as a chartplotter's weather view does:
   step, Page Up/Down a day, Home now, End the last hour.
 - **How fresh the data is**: the model, the run (UTC) and when the
   forecast ends, then a coloured pill per source the shown layers are
-  drawn from, with its run's age (the run, when it was published and when
-  the next one is due in its tooltip), as the web page's header shows them
+  drawn from, with its run's age and, in brackets, when the next run is
+  due (*10 h old (next in 2 h)*; the run and when it was published and is
+  due in its tooltip), as the web page's header shows them
   (`/api/status` `freshness`; the map layers read ECMWF, so the regional
   wind models are not listed; when the panel cannot read the
   chartplotter's chart list or the presets, every source is, and both
