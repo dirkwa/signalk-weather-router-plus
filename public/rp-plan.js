@@ -2398,7 +2398,9 @@ function attachToJob(id, jobRow) {
   _closeJobStream();
   _activeJobId = id;
   _attachSeq++;
-  try { localStorage.setItem(_COMPUTING_KEY, id); } catch (_) { /* not remembered */ }
+  // A new attachment is remembered; a reconnect leaves the key alone, so a job another tab of this browser started
+  // meanwhile stays the remembered one.
+  if (!reconnect) try { localStorage.setItem(_COMPUTING_KEY, id); } catch (_) { /* not remembered */ }
   const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
   btn.disabled = true;
@@ -2659,6 +2661,10 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
       // A route started, or one opened from Saved or a window, meanwhile: that one stays, and this job is forgotten
       // (a route started meanwhile is remembered in its place).
       if (_activeJobId || _currentRouteJobId !== shownBefore) { _forgetComputing(id); return; }
+      // Another tab of this browser remembered a job of its own meanwhile (the key is shared): that one is left to it.
+      let still = true;
+      try { still = localStorage.getItem(_COMPUTING_KEY) === id; } catch (_) { /* storage gone: act on what was read */ }
+      if (!still) return;
       if (job.status === 'queued' || job.status === 'running') { attachToJob(id, job); return; }
       if (job.status === 'done') _loadRouteJob(id, job, { computed: true });   // forgotten once its route has loaded
       else _forgetComputing(id);
