@@ -331,11 +331,14 @@ function _drawSnapConnectors(p) {
   return _navWarns;
 }
 
-// A job's skeleton (coarse A* / corridor) drawn in blue, when it has one.
+// A job's skeleton (coarse A* / corridor) drawn in blue, when it has one. An answer that comes after another route
+// was opened (a job attached, Find Route) is dropped: the channel cancels the request only when another skeleton is
+// asked for.
 function loadSkeleton(id) {
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
     .then(r => r.ok ? r.json() : null)
     .then(geojson => {
+      if (_currentRouteJobId !== id) return;
       skeletonSource.clear();
       if (!geojson) return;
       const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
@@ -349,7 +352,7 @@ function loadSkeleton(id) {
       }
       skeletonSource.addFeatures(features);
     })
-    .catch(() => skeletonSource.clear());
+    .catch(() => { if (_currentRouteJobId === id) skeletonSource.clear(); });
 }
 
 // ─────────── Route library: recent jobs (GET /api/routes) ───────────
@@ -2337,11 +2340,11 @@ function _initLimitInputs() {
 }
 window.addEventListener('rp:units', _initLimitInputs);
 
-// The finished job's stage fronts (faint) replace the live ones.
+// The finished job's stage fronts (faint) replace the live ones; dropped once another route is open (loadSkeleton).
 function _loadFronts(id) {
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/fronts', { cache: 'no-store' }, 'fronts-load')
     .then(r => r.ok ? r.json() : null)
-    .then(fronts => { if (fronts) drawFronts(fronts); })
+    .then(fronts => { if (fronts && _currentRouteJobId === id) drawFronts(fronts); })
     .catch(() => {});
 }
 

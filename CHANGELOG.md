@@ -24,6 +24,10 @@ uses [Semantic Versioning](https://semver.org/).
   route another device started is left alone. A Best departure window
   still running opens its section, where its table was already being
   followed but out of sight.
+- **A saved route's corridor and stage fronts stay off the route opened
+  after it.** Opening a route still computing, or pressing Find Route,
+  before a saved route's corridor (blue) and stage fronts had loaded
+  drew them over the new search when they came.
 
 
 ### Added
