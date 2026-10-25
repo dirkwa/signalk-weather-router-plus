@@ -32,7 +32,8 @@
  *    budget grows by the stages this costs;
  *  - inside a stretch narrower than one subsector bin, candidates are
  *    binned by their offset across the passage (NARROW_BINS bins across
- *    the local width) instead of by the start→end offset, so several
+ *    the local width, or across 200 m where the passage is narrower, so
+ *    fewer bins there) instead of by the start→end offset, so several
  *    branches survive through the passage instead of one per bin.
  * Automatic vias (Via.auto) work like user vias but are never reported as
  * route waypoints.

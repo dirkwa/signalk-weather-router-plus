@@ -876,7 +876,8 @@ Chen & Mao 2024), guided by a corridor from a global water grid:
    that point, and inside the passage it steps at most 4 × the local
    width (not below 1 km); the stage budget grows by the stages this
    costs. Inside a stretch narrower than one subsector bin, candidates
-   are binned across the passage (6 bins over its width) instead of by
+   are binned across the passage (6 bins over its width, but at least
+   200 m / 6 = 33 m wide, so fewer below 200 m) instead of by
    the start → end offset, so several branches get through a strait
    (in the test runs Madeira → Cartagena kept 8–12 branches through
    Gibraltar, where it used to get down to 1).
