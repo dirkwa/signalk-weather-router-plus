@@ -558,6 +558,9 @@ test('tile store: an empty or non-gzip saved file is a miss and is removed (what
   await store.write(T, zlib.gzipSync('1'), g);
   fs.writeFileSync(f, Buffer.from('not gzip at all, but long enough'));
   assert.equal(await store.read(T), null, 'a non-gzip file is a miss');
+  // The read removes the file without waiting for it: a removal still on its way when tile 2 is written takes tile 2.
+  for (let i = 0; i < 50 && fs.existsSync(f); i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(f), false, 'and it is removed too');
   await store.write(T, zlib.gzipSync('2'), g);
   const ok = await store.read(T);
   assert.ok(ok && zlib.gunzipSync(ok).toString() === '2', 'a real tile reads back');
