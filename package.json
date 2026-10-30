@@ -78,7 +78,8 @@
     "compatibility": ">=2.24.0",
     "displayName": "Weather Router Plus",
     "recommends": [
-      "@meri-imperiumi/signalk-internet"
+      "@meri-imperiumi/signalk-internet",
+      "signalk-polar-management"
     ],
     "appIcon": "icon.png",
     "screenshots": [
