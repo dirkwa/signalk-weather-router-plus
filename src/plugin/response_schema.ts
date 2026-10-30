@@ -38,6 +38,9 @@ export const RouteSummarySchema = Type.Object({
   forecast_cycle: Type.Optional(Type.String()),
   current_sources: Type.Optional(Type.Array(Type.String())),
   polar: Type.Optional(nullable(Type.String(), 'Label of the polar the route was computed with, or null when motor-only.')),
+  polar_source: Type.Optional(
+    Type.Union([Type.Literal('signalk'), Type.Literal('internal')], { description: 'Source of the polar used for this route.' })
+  ),
   polar_performance: Type.Optional(Type.Number({ description: 'Polar performance applied (ratio; 1 = the polar as written).' })),
   auto_vias: Type.Optional(
     Type.Array(Type.Object({ name: Type.String(), width_m: Type.Number() }), {

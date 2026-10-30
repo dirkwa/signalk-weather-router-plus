@@ -15,6 +15,7 @@
 
 import { avoidAreasFromNotes, type AvoidArea } from './geo/avoid';
 import { MINUTE_MS } from './geo/units';
+import { detectManagedPolar, selectManagedPolar } from './plugin/managedpolar';
 import * as path from 'node:path';
 import type { IRouter } from 'express';
 import {
@@ -118,6 +119,7 @@ interface SkApp {
     };
   }) => void;
   resourcesApi?: {
+    getResource?: (type: string, id: string) => Promise<unknown>;
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
     listResources?: (type: string, params: Record<string, unknown>, providerId?: string) => Promise<Record<string, unknown>>;
   };
@@ -224,6 +226,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * notes that cannot be read fail the job rather than route without them.
    */
   async function dispatchRoute(job: Job): Promise<void> {
+    const gen = startGen;
+    const manager = jobs;
+    const current = (): boolean => !stopped && gen === startGen && jobs === manager && manager?.get(job.id)?.status === 'running';
     let avoid: AvoidArea[] = [];
     if (job.request.avoid_areas !== false) {
       let failure: string | null = null;
@@ -236,17 +241,29 @@ export = function plugin(app: SkApp): SignalKPlugin {
         }
       }
       if (failure) {
-        if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
-        jobs.onError(job.id, `${failure}, so the areas to avoid are unknown; try again, or turn off Avoid marked areas`);
+        if (!current()) return; // cancelled or restarted meanwhile
+        manager?.onError(job.id, `${failure}, so the areas to avoid are unknown; try again, or turn off Avoid marked areas`);
         updateStatus();
         return;
       }
     }
-    if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+    if (!current()) return;
+    let managedPolar;
+    try {
+      managedPolar =
+        config && job.request.mode !== 'motor' ? await selectManagedPolar(app, config.polarSource, job.request.vessel?.polar) : undefined;
+    } catch (err) {
+      if (current()) {
+        manager?.onError(job.id, `Polar source: ${(err as Error).message}`);
+        updateStatus();
+      }
+      return;
+    }
+    if (!current()) return; // provider lookup can outlive cancellation or a restart
     routeAtWorker = job.id;
     // Cleared here, not by the worker when the route starts: a cancel between this post and the start stays set.
     Atomics.store(pool.cancelFlag, 0, 0);
-    pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign() });
+    pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign(), managedPolar });
   }
 
   /** Stop the running job: the route worker checks the flag; one still waiting for the first forecast fails at once. */
@@ -1514,6 +1531,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         windows: windows ? { running: windows.running } : null,
         // The name, draught and air draft are Signal K's (vessels.self.name, design.*), not plugin settings.
         vessel: config?.vessel ? { ...config.vessel, ...selfDesign(), name: selfName() } : undefined,
+        polar_source: config?.polarSource,
+        managed_polar: app.getSelfPath?.('polars.activePolar'),
         polar: config?.polarFile,
         router: config?.routing.router,
         land: config?.landShapefiles,
@@ -1576,6 +1595,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
       publicDir,
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),
+      managedPolar: () => detectManagedPolar(app),
+      polarSource: () => config?.polarSource ?? 'auto',
       getSettings: () => {
         if (!settings || stopped) throw new NotStartedError();
         return { values: settings.values, schema: settingsSchema() };

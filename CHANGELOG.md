@@ -6,6 +6,30 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept `auto` and `signalk-active` selections when submitting routes and
+  departure windows. Their provider check stays at dispatch; local file tokens
+  are still checked before queuing. Tokenless previews follow `polarSource`,
+  and failed polar-list refreshes discard pending preview responses.
+- Preserve Polar Management beat/run targets stored in `derived.rows`, using
+  the existing linear polar model and per-wind-speed no-go floors.
+- Keep the polar picker filter during automatic refresh; motor-only routes
+  accept managed-polar tokens without resolving them as local files.
+
+
+### Added
+
+- Automatically use a valid active Polar Management resource as the sailing
+  polar, including its shared performance factor, with the internal default
+  as fallback. Internal library polars remain selectable as route overrides.
+  The picker and preview identify the active source and refresh every 30 seconds;
+  completed route summaries include `polar_source`.
+- A `polarSource` configuration preference (`auto` or `files`) and `auto` /
+  `signalk-active` API polar tokens. Managed tables are adapted from canonical
+  SI resources into the existing `PolarDiagram`; interpolation and routing math
+  are unchanged. Each sailing route uses a fixed provider snapshot.
+
 ## [0.2.1-beta.1] - 2026-10-29
 
 ### Fixed

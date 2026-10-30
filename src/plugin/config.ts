@@ -25,6 +25,7 @@ import type { RouteRequest } from './protocol';
 /** What the Signal K plugin config holds now. */
 export interface PluginConfig {
   landShapefiles?: string;
+  polarSource?: 'auto' | 'files' | 'signalk';
   /** A chart navigation mesh folder you manage yourself (index.json and tiles); blank = none. */
   meshDir?: string;
   /** Managed meshes: the catalogue of published meshes and the names ticked for download (plugin/meshes.ts). */
@@ -101,6 +102,7 @@ export interface LegacyPluginConfig {
 
 export interface ResolvedConfig {
   landShapefiles: string[];
+  polarSource: 'auto' | 'files' | 'signalk';
   /** A mesh folder managed by hand, or null. */
   meshDir: string | null;
   /** Managed meshes: catalogue URL, the names ticked, and the store directory the copies live in. */
@@ -267,6 +269,14 @@ export const CONFIG_SCHEMA = {
         'A navigation mesh folder you manage yourself (index.json and its tiles), used beside the downloaded ones. Where a mesh covers a leg, and the vessel draught and air draft are set ' +
         '(Signal K vessel base data), the leg is routed on the mesh: charted depths, bridge clearances, rocks, wrecks, marks and structures avoided. Blank = none.',
     },
+    polarSource: {
+      type: 'string',
+      title: 'Polar source',
+      enum: ['auto', 'files', 'signalk'],
+      default: 'auto',
+      description:
+        'auto detects the active Polar Management polar with local fallback. files prefers the internal default. signalk is retained as an alias for auto. Local polars remain available as overrides.',
+    },
     polarFile: {
       type: 'string',
       title: 'Default polar file (.csv or .pol)',
@@ -383,6 +393,8 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
   const mirror = c.forecast?.mirror ?? 'ecmwf';
   if (!(MIRRORS as readonly string[]).includes(mirror))
     throw new Error(`config forecast.mirror: ${String(mirror)} is not one of ${MIRRORS.join(', ')}`);
+  if (c.polarSource !== undefined && c.polarSource !== 'auto' && c.polarSource !== 'files' && c.polarSource !== 'signalk')
+    throw new Error('config polarSource: expected auto, files or signalk');
   const harmonicDir = c.currents?.harmonicDir;
   const v = settings.vessel;
   const f = settings.forecast;
@@ -390,6 +402,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
   const r = settings.routing;
   const p = settings.publish;
   return {
+    polarSource: c.polarSource ?? 'auto',
     landShapefiles: land,
     meshDir: c.meshDir && c.meshDir.trim() ? c.meshDir.trim() : null,
     mesh: {

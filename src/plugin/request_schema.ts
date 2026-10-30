@@ -151,7 +151,13 @@ export const VESSEL_FIELDS = {
       description: 'Share of the polar boat speeds achieved under sail (ratio, 1 = as written)',
     })
   ),
-  polar: Type.Optional(Type.String({ maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' })),
+  polar: Type.Optional(
+    Type.String({
+      maxLength: 200,
+      description:
+        'Polar token from /api/polars; absent = polarSource preference; auto = managed with local fallback; signalk-active = require managed; default or file token = local override',
+    })
+  ),
   draught_m: Type.Optional(
     Type.Number({
       minimum: DRAUGHT_M_RANGE[0],

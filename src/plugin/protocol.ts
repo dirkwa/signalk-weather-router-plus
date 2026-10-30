@@ -14,6 +14,7 @@
  * Everything crossing the boundary is structured-cloneable.
  */
 
+import type { ManagedPolar } from './managedpolar';
 import type { ConditionsRow } from './overlays';
 import type { AvoidArea } from '../geo/avoid';
 import type { ResolvedConfig, SelfDesign } from './config';
@@ -312,7 +313,7 @@ export type MainToWorker =
       position?: VesselPosition | null;
     }
   /** avoid: the areas to avoid marked on Signal K notes, read by the main thread (the workers have no Resources API). */
-  | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[]; self?: SelfDesign }
+  | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[]; self?: SelfDesign; managedPolar?: ManagedPolar }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
   /**
    * tiles workers: answer a tile's query, encode it as the store saves it (tiles.ts encodeTile) and write it to `tmp`

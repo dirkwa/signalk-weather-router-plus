@@ -219,14 +219,14 @@ test('SettingsStore: bad stored values fall back per key; unreadable file is kep
 /** Minimal express-like router capturing handlers. */
 function fakeRouter(): {
   router: unknown;
-  call: (method: string, p: string, body?: unknown) => Promise<{ status: number; body: unknown }>;
+  call: (method: string, p: string, body?: unknown, query?: Record<string, string>) => Promise<{ status: number; body: unknown }>;
 } {
   const routes = new Map<string, (req: unknown, res: unknown) => unknown>();
   const reg = (m: string) => (p: string | string[], h: (req: unknown, res: unknown) => unknown) => {
     for (const x of Array.isArray(p) ? p : [p]) routes.set(`${m} ${x}`, h);
   };
   const router = { get: reg('GET'), post: reg('POST'), put: reg('PUT'), delete: reg('DELETE') };
-  const call = async (method: string, p: string, body?: unknown) => {
+  const call = async (method: string, p: string, body?: unknown, query: Record<string, string> = {}) => {
     const h = routes.get(`${method} ${p}`);
     if (!h) throw new Error(`no route ${method} ${p}`);
     let status = 200;
@@ -244,7 +244,7 @@ function fakeRouter(): {
         return res;
       },
     };
-    await h({ body, query: {}, params: {} }, res);
+    await h({ body, query, params: {} }, res);
     return { status, body: out };
   };
   return { router, call };
@@ -483,6 +483,57 @@ test('settings: Tides group reloads tides only', () => {
   );
 });
 
+test('polar source automatically detects by default and retains files/signalk compatibility', () => {
+  assert.equal(resolveConfig({}, defaultSettings()).polarSource, 'auto');
+  for (const polarSource of ['auto', 'files', 'signalk'] as const)
+    assert.equal(resolveConfig({ polarSource }, defaultSettings()).polarSource, polarSource);
+  assert.throws(() => resolveConfig({ polarSource: 'other' } as never, defaultSettings()), /polarSource/);
+});
+
+test('managed detection API keeps the internal library, automatic fallback and explicit overrides', async () => {
+  const dir = tmp();
+  const file = path.join(dir, 'internal.csv');
+  fs.writeFileSync(file, 'twa/tws,10\n45,4\n90,6\n180,5\n');
+  let available = true;
+  const { router, call } = fakeRouter();
+  registerApi(
+    router as never,
+    {
+      pluginId: 'x',
+      basePath: '/x',
+      publicDir: dir,
+      polarLibrary: () => ({ polarFile: file, polarsDir: dir }),
+      managedPolar: async () =>
+        available ? { label: 'TBD', twa: [45, 90, 180], tws: [5, 10], speeds: [2, 4, 4, 6, 3, 5], performanceFactor: 0.5 } : null,
+    } as unknown as ApiDeps
+  );
+  const list = await call('GET', '/api/polars');
+  const entries = list.body as { path: string; activeSource?: string }[];
+  assert.equal(entries[0].path, 'auto');
+  assert.equal(entries[0].activeSource, 'signalk');
+  assert.ok(entries.some(entry => entry.path === 'signalk-active'));
+  assert.ok(entries.some(entry => entry.path === 'default'));
+  const preview = await call('GET', '/api/polars/table');
+  assert.equal(preview.status, 200);
+  assert.deepEqual((preview.body as { speeds_ms: number[][] }).speeds_ms, [
+    [1, 2],
+    [2, 3],
+    [1.5, 2.5],
+  ]);
+  assert.equal((preview.body as { source: string }).source, 'signalk');
+  const override = await call('GET', '/api/polars/table', undefined, { path: 'default' });
+  assert.equal((override.body as { source: string }).source, 'internal');
+  available = false;
+  const fallback = await call('GET', '/api/polars/table');
+  assert.equal(fallback.status, 200);
+  assert.equal((fallback.body as { source: string }).source, 'internal');
+  const missing = await call('GET', '/api/polars/table', undefined, { path: 'signalk-active' });
+  assert.equal(missing.status, 400);
+  assert.match((missing.body as { error: string }).error, /No active Polar Management/);
+  const unavailableList = await call('GET', '/api/polars');
+  assert.equal((unavailableList.body as { activeSource: string }[])[0].activeSource, 'internal');
+});
+
 test('selfDesignValue: Signal K self-data within the vessel bounds is used, anything else is unknown', () => {
   assert.equal(selfDesignValue({ value: { maximum: 2.1 } }, 'maximum', [0.1, 30]), 2.1);
   assert.equal(selfDesignValue({ value: 18 }, undefined, [0.5, 100]), 18);
@@ -492,4 +543,48 @@ test('selfDesignValue: Signal K self-data within the vessel bounds is used, anyt
   assert.equal(selfDesignValue({ value: null }, undefined, [0.5, 100]), null);
   assert.equal(selfDesignValue(undefined, 'maximum', [0.1, 30]), null);
   assert.equal(selfDesignValue({ value: { maximum: 'deep' } }, 'maximum', [0.1, 30]), null);
+});
+
+test('tokenless polar previews follow the source preference, while explicit auto and local choices override it', async t => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'internal.csv');
+  fs.writeFileSync(file, 'twa/tws,10\n45,4\n90,6\n180,5\n');
+  let source: 'auto' | 'files' | 'signalk' = 'files';
+  let loads = 0;
+  const { router, call } = fakeRouter();
+  registerApi(
+    router as never,
+    {
+      pluginId: 'x',
+      basePath: '/x',
+      publicDir: dir,
+      polarLibrary: () => ({ polarFile: file, polarsDir: dir }),
+      polarSource: () => source,
+      managedPolar: async () => {
+        loads++;
+        return { label: 'Managed boat', twa: [60, 120], tws: [5], speeds: [3, 4], performanceFactor: 1 };
+      },
+    } as unknown as ApiDeps
+  );
+  for (const query of [undefined, { path: '' }]) {
+    const angles = await call('GET', '/api/polar-angles', undefined, query);
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [45]);
+    const table = await call('GET', '/api/polars/table', undefined, query);
+    assert.equal((table.body as { source: string }).source, 'internal');
+  }
+  assert.equal(loads, 0, 'files preference does not fetch the provider');
+  for (const token of ['auto', 'signalk-active']) {
+    const angles = await call('GET', '/api/polar-angles', undefined, { path: token });
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [60]);
+    const table = await call('GET', '/api/polars/table', undefined, { path: token });
+    assert.equal((table.body as { source: string }).source, 'signalk');
+  }
+  for (const preference of ['auto', 'signalk'] as const) {
+    source = preference;
+    const angles = await call('GET', '/api/polar-angles');
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [60]);
+    const local = await call('GET', '/api/polars/table', undefined, { path: 'default' });
+    assert.equal((local.body as { source: string }).source, 'internal');
+  }
 });

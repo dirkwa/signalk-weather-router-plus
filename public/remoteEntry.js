@@ -513,7 +513,13 @@ var signalk_weather_router_plus = (function () {
     // Polars, currents, forecast source, Weather API -------------------------------
     var polarSection = card('Polars',
       "Boat speed tables for sailing. The web app's Vessel picker offers the library; a route can pick any of them.",
-      row('Default polar', text(['polarFile'], 'blank = the bundled Catalina 36'), 'A .csv or .pol file. Used when a route names no polar.'),
+      row('Polar source',
+        h('select', { className: 'form-select form-control', value: get(['polarSource'], 'auto') === 'files' ? 'files' : 'auto',
+          onChange: function (e) { set(['polarSource'], e.target.value); } },
+          h('option', { value: 'auto' }, 'Automatic (Polar Management with internal fallback)'),
+          h('option', { value: 'files' }, 'Internal default')),
+        'Automatic uses the active Polar Management polar when available. Internal tables remain available as route overrides.'),
+      row('Default polar', text(['polarFile'], 'blank = the bundled Catalina 36'), 'A .csv or .pol file. Used for internal fallback or an explicit internal selection.'),
       row('Library folder', text(['polarsDir'], 'blank = the ~700 bundled polars'),
         'A folder of .pol / .csv files to offer instead of the bundled library (weather_routing_pi, GPL-3.0). Polars you generate are kept in the plugin data directory either way.'));
     var MIRROR_LABELS = { ecmwf: 'ECMWF (data.ecmwf.int)', aws: 'Amazon (AWS Open Data)', google: 'Google Cloud' };

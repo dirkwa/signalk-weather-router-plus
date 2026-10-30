@@ -6,6 +6,7 @@
  * instead of module-level variables.
  */
 
+import { ACTIVE_POLAR_TOKEN, managedDiagram, type ManagedPolar } from '../managedpolar';
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
@@ -506,7 +507,8 @@ export async function route(
   id: string,
   request: RouteRequest,
   avoidAreas: AvoidArea[] = [],
-  self?: SelfDesign
+  self?: SelfDesign,
+  managedPolar?: ManagedPolar
 ): Promise<void> {
   const { config: cfg, client: cl } = requireInit(st);
   // The flag is cleared by the main thread before it posts the route (index.ts dispatchRoute).
@@ -692,7 +694,11 @@ export async function route(
     // Per-route polar: a library token from GET /api/polars, else the configured default.
     let routePolar: PolarDiagram | null = st.polar;
     let polarLabel: string | null = cfg.polarFile ? path.basename(cfg.polarFile) : null;
-    if (request.vessel?.polar) {
+    if (managedPolar && request.mode !== 'motor') {
+      routePolar = managedDiagram(managedPolar);
+      polarLabel = managedPolar.label;
+      vessel.polarPerformance = request.vessel?.polar_performance ?? managedPolar.performanceFactor;
+    } else if (request.vessel?.polar && request.vessel.polar !== 'auto' && request.vessel.polar !== ACTIVE_POLAR_TOKEN) {
       const file = resolvePolarPath(
         { polarFile: cfg.polarFile, polarsDir: cfg.polarsDir, userDir: cfg.polarUserDir },
         request.vessel.polar
@@ -1019,6 +1025,7 @@ export async function route(
       regional_wind: regionalWind,
       current_sources: result.currentSources,
       polar: polarLabel,
+      polar_source: request.mode === 'motor' ? undefined : managedPolar ? 'signalk' : 'internal',
       polar_performance: routePolar ? vessel.polarPerformance : undefined,
       auto_vias: result.autoVias?.map(v => ({ name: v.name, width_m: Math.round(v.widthM) })),
     };
