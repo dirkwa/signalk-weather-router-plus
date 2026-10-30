@@ -13,7 +13,7 @@
 // Inputs show values in the Signal K user's unit preferences;
 // conversion happens here, the server only ever sees SI.
 
-import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
+import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, setCheckEvery, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
 (function () {
   const form = document.getElementById('srvSettingsForm');
   const saveBtn = /** @type {HTMLButtonElement} */ (document.getElementById('srvSettingsSave'));
@@ -311,6 +311,7 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
       if (!r.ok || !body) { form.innerHTML = ''; setStatus('<span class="err">Settings unavailable:</span> ' + esc((body && body.error) || ('HTTP ' + r.status))); return; }
       schema = body.schema;
       values = body.values;
+      setCheckEvery(values && values.forecast ? values.forecast.refreshInterval : null);
       render();
       setStatus('');
     } catch (e) {
@@ -353,6 +354,8 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
       if (!r.ok || !body) { setStatus('<span class="err">Save failed:</span> ' + esc((body && body.error) || ('HTTP ' + r.status))); return; }
       values = body.values;
       fillFromValues();
+      // The data sources' check line names the interval; it reads it only when the list opens.
+      setCheckEvery(values && values.forecast ? values.forecast.refreshInterval : null);
       const rl = body.reloaded || {};
       const notes = [];
       if (rl.forecast) notes.push('<span class="warn">The forecast is reloading</span> for the new horizon / field set. Overlays keep the previous forecast until it finishes; a download can take several minutes.');

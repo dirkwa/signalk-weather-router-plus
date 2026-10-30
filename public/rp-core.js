@@ -1170,7 +1170,7 @@ let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollaps
 // Under each source, as text: when its run was published and the next is due (the pill's tooltip) and what the last
 // check of it found (status `checks`); under the list, how often the plugin checks, with Check now.
 let _checks = {};          // status `checks` of the last status
-let _checkEveryS = null;   // forecast.refreshInterval from /api/settings, read when the list opens
+let _checkEveryS = null;   // forecast.refreshInterval from /api/settings, read when the list opens and on a save
 let _checkNowNote = '';    // what Check now did, kept across the status redraws while it applies
 // Check now is off from the tap until every source in the status `checks` has been checked since the server took the
 // request: the round's end. A second request once a round has started queues a whole round more
@@ -1178,6 +1178,9 @@ let _checkNowNote = '';    // what Check now did, kept across the status redraws
 // tides after it, so ECMWF's `forecast_loading` alone does not span it.
 let _checkAsking = false;
 let _checkTakenAt = 0;     // when the server took the request, by its own clock (the answer's Date header); 0 before
+// The Check now request in flight. Ending its round (every source checked, the limit, a refusal) moves this on, so a late
+// answer to it changes nothing.
+let _checkAttempt = 0;
 const _CHECK_ROUND_MAX_MS = 10 * 60 * 1000;   // on again after this whatever the statuses said
 const _CHECK_SAID = {
   newest: 'the newest run is in use',
@@ -1230,44 +1233,56 @@ function _checkSettled(s) {
   const l = s.forecast_loading;
   const over = ats.length ? ats.every(t => t >= _checkTakenAt) : !(l && l.phase === 'checking');
   if (!over) return;
+  _endCheck();
+}
+// Check now on again; whatever its request still answers is ignored.
+function _endCheck() {
+  _checkAttempt++;
   _checkAsking = false;
   clearTimeout(_checkNoteTimer);
   _checkNowNote = '';
+}
+/** forecast.refreshInterval (s) as the settings now hold it: the list's check line names it. */
+export function setCheckEvery(v) {
+  if (Number.isFinite(v) && v > 0 && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
 }
 function _loadCheckEvery() {
   // Plain fetch, as the Defaults tab reads it: a refusal here is no reason for the page-wide sign-in.
   fetch(API + '/settings', { credentials: 'same-origin', cache: 'no-store' })
     .then(r => (r.ok ? r.json() : null))
-    .then(b => {
-      const v = b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null;
-      if (Number.isFinite(v) && v > 0 && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
-    })
+    .then(b => setCheckEvery(b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null))
     .catch(() => { /* the line says nothing of the interval */ });
 }
 let _checkNoteTimer = null;
 function _checkNow() {
   const note = t => { _checkNowNote = t; redrawStatusLine(); };
   if (_checkAsking) return;
+  const attempt = ++_checkAttempt;
+  const current = () => attempt === _checkAttempt;
   _checkAsking = true;
   _checkTakenAt = 0;
   clearTimeout(_checkNoteTimer);
+  // Armed with the request, not its answer: a request that never answers ends the round too.
+  _checkNoteTimer = setTimeout(() => { _endCheck(); redrawStatusLine(); }, _CHECK_ROUND_MAX_MS);
   note('asking…');
   authFetch(API + '/forecast/refresh', { method: 'POST' }, null)
     .then(r => {
+      if (!current()) return false;
       if (!r.ok) return _apiErrorText(r).then(t => Promise.reject(new Error(t)));
       // The Date header has whole seconds, cut down: a check after the request is never earlier than it.
       const at = Date.parse(r.headers.get('date') || '');
       _checkTakenAt = Number.isFinite(at) ? at : Date.now();
-      return r.json();
+      return r.json().then(() => true);
     })
-    .then(() => {
+    .then(asked => {
+      if (!asked || !current()) return;
       note('asked: every source is being checked, and each says what it found when it is done');
       setTimeout(loadPluginStatus, 4000);
       setTimeout(loadPluginStatus, 15000);
-      _checkNoteTimer = setTimeout(() => { _checkAsking = false; note(''); }, _CHECK_ROUND_MAX_MS);
     })
     .catch(err => {
-      _checkAsking = false;
+      if (!current()) return;
+      _endCheck();
       note('could not ask: ' + err.message);
       _checkNoteTimer = setTimeout(() => note(''), 60000);
     });
