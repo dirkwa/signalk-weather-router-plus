@@ -1242,15 +1242,22 @@ function _endCheck() {
   clearTimeout(_checkNoteTimer);
   _checkNowNote = '';
 }
+// Bumped by each setCheckEvery: a settings read that started before one (the Defaults tab's save or read) is older.
+let _checkEverySet = 0;
 /** forecast.refreshInterval (s) as the settings now hold it: the list's check line names it. */
 export function setCheckEvery(v) {
+  _checkEverySet++;
   if (Number.isFinite(v) && v > 0 && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
 }
 function _loadCheckEvery() {
+  const set = _checkEverySet;
   // Plain fetch, as the Defaults tab reads it: a refusal here is no reason for the page-wide sign-in.
   fetch(API + '/settings', { credentials: 'same-origin', cache: 'no-store' })
     .then(r => (r.ok ? r.json() : null))
-    .then(b => setCheckEvery(b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null))
+    .then(b => {
+      if (set !== _checkEverySet) return;   // the Defaults tab saved or read since: its value is newer
+      setCheckEvery(b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null);
+    })
     .catch(() => { /* the line says nothing of the interval */ });
 }
 let _checkNoteTimer = null;
@@ -1272,7 +1279,8 @@ function _checkNow() {
       // The Date header has whole seconds, cut down: a check after the request is never earlier than it.
       const at = Date.parse(r.headers.get('date') || '');
       _checkTakenAt = Number.isFinite(at) ? at : Date.now();
-      return r.json().then(() => true);
+      // The server has taken the request once it answers 2xx; a body that cannot be read changes nothing.
+      return r.json().then(() => true, () => true);
     })
     .then(asked => {
       if (!asked || !current()) return;
