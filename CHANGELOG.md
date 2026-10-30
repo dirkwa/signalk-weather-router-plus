@@ -30,6 +30,12 @@ uses [Semantic Versioning](https://semver.org/).
   SI resources into the existing `PolarDiagram`; interpolation and routing math
   are unchanged. Each sailing route uses a fixed provider snapshot.
 
+### Changed
+
+- The Signal K App Store lists Polar Management (`signalk-polar-management`)
+  as a recommended plugin, beside signalk-internet (`signalk.recommends` in
+  `package.json`).
+
 ## [0.2.1-beta.1] - 2026-10-29
 
 ### Fixed
