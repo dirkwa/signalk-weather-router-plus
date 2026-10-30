@@ -1242,22 +1242,33 @@ function _endCheck() {
   clearTimeout(_checkNoteTimer);
   _checkNowNote = '';
 }
-// Bumped by each setCheckEvery: a settings read that started before one (the Defaults tab's save or read) is older.
-let _checkEverySet = 0;
-/** forecast.refreshInterval (s) as the settings now hold it: the list's check line names it. */
-export function setCheckEvery(v) {
-  _checkEverySet++;
+// The check line's interval comes from settings reads (this list's and the Defaults tab's) and the Defaults tab's saves,
+// which can answer in any order. A save's answer is the value. A read's answer counts unless a save started after the
+// read did (the read may predate it) or a read started later has answered already.
+let _everyReads = 0, _everyReadShown = 0, _everySaves = 0;
+function _setCheckEvery(v) {
   if (Number.isFinite(v) && v > 0 && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
 }
+/** Call as a settings read starts; call the result with its forecast.refreshInterval (s) when it answers. */
+export function checkEveryRead() {
+  const id = ++_everyReads, saves = _everySaves;
+  return v => {
+    if (saves !== _everySaves || id < _everyReadShown) return;
+    _everyReadShown = id;
+    _setCheckEvery(v);
+  };
+}
+/** Call as a settings save starts; call the result with the saved forecast.refreshInterval (s). */
+export function checkEverySave() {
+  _everySaves++;
+  return _setCheckEvery;
+}
 function _loadCheckEvery() {
-  const set = _checkEverySet;
+  const apply = checkEveryRead();
   // Plain fetch, as the Defaults tab reads it: a refusal here is no reason for the page-wide sign-in.
   fetch(API + '/settings', { credentials: 'same-origin', cache: 'no-store' })
     .then(r => (r.ok ? r.json() : null))
-    .then(b => {
-      if (set !== _checkEverySet) return;   // the Defaults tab saved or read since: its value is newer
-      setCheckEvery(b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null);
-    })
+    .then(b => apply(b && b.values && b.values.forecast ? b.values.forecast.refreshInterval : null))
     .catch(() => { /* the line says nothing of the interval */ });
 }
 let _checkNoteTimer = null;
