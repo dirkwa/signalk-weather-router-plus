@@ -1243,25 +1243,26 @@ function _endCheck() {
   _checkNowNote = '';
 }
 // The check line's interval comes from settings reads (this list's and the Defaults tab's) and the Defaults tab's saves,
-// which can answer in any order. A save's answer is the value. A read's answer counts unless a save started after the
-// read did (the read may predate it) or a read started later has answered already.
-let _everyReads = 0, _everyReadShown = 0, _everySaves = 0;
+// which can answer in any order. A save's answer is the value. A read's answer counts unless a save answered after the
+// read started (the server may have served the read before it stored the save) or a read started later has already
+// shown a value.
+let _everyReads = 0, _everyReadShown = 0, _everySaved = 0;
+const _everyValid = v => Number.isFinite(v) && v > 0;
 function _setCheckEvery(v) {
-  if (Number.isFinite(v) && v > 0 && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
+  if (_everyValid(v) && v !== _checkEveryS) { _checkEveryS = v; redrawStatusLine(); }
 }
 /** Call as a settings read starts; call the result with its forecast.refreshInterval (s) when it answers. */
 export function checkEveryRead() {
-  const id = ++_everyReads, saves = _everySaves;
+  const id = ++_everyReads, saved = _everySaved;
   return v => {
-    if (saves !== _everySaves || id < _everyReadShown) return;
+    if (!_everyValid(v) || saved !== _everySaved || id < _everyReadShown) return;
     _everyReadShown = id;
     _setCheckEvery(v);
   };
 }
-/** Call as a settings save starts; call the result with the saved forecast.refreshInterval (s). */
+/** Call as a settings save starts; call the result with the saved forecast.refreshInterval (s) when it answers. */
 export function checkEverySave() {
-  _everySaves++;
-  return _setCheckEvery;
+  return v => { _everySaved++; _setCheckEvery(v); };
 }
 function _loadCheckEvery() {
   const apply = checkEveryRead();
