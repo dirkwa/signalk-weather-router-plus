@@ -1,13 +1,16 @@
 /**
  * One leg on the chart mesh, planned where the mesh is loaded, by the
- * hybrid rule. The mesh route is the skeleton; under motor it is
- * the route; otherwise its narrow passages (both shores within
- * CONSTRAINED_WIDTH_M) are motored along the mesh (sailed when the sail
- * threshold is 0) and each open stretch between them is sailed by the
- * selected router, whose every move is tested against the mesh's blocked
- * triangles (land.ts): charted depth under the draught, clearance under
- * the air draft, hazards, marks, structures, areas to avoid. No copy of
- * the chart, no raster (docs/plans/sailing-search-on-the-mesh.md).
+ * hybrid rule. The mesh route is the skeleton: its narrow passages (both
+ * shores within CONSTRAINED_WIDTH_M) are motored along the mesh (sailed
+ * when the sail threshold is 0) and each open stretch between them is
+ * searched by the selected router under the request's policy, whose every
+ * move is tested against the mesh's blocked triangles (land.ts): charted
+ * depth under the draught, clearance under the air draft, hazards, marks,
+ * structures, areas to avoid. No copy of the chart, no raster
+ * (docs/plans/sailing-search-on-the-mesh.md). Under motor too (until
+ * 2026-10-30 the whole mesh route was walked under motor, so the wind and
+ * wave limits and the comfort weight could warn but never steer there):
+ * the speed under power is the same everywhere, the sea is not.
  *
  * The plugin runs this in the child process that holds the mesh
  * (plugin/meshlegtask.ts); the tests run it in-process on small meshes.
@@ -19,7 +22,6 @@ import { forecastHorizonNote, type LegWind } from '../horizon';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
 import { recomputePerWaypointMetadata } from '../route';
 import { limitWarnings, rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../smoother';
-import { computeAvoidingLimits } from '../limitavoid';
 import type { LegSimResult, ModePolicy, SimOptions } from '../legsim';
 import type { LegPlan } from '../multileg';
 import { RouteCancelled, type PropagatorOptions } from '../propagator';
@@ -117,20 +119,16 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     );
   const wind = inp.wind ?? new NoWind();
   const current = inp.current;
-  const motor = inp.sim.modePolicy === 'motor';
   // Sail only: sail_max with a threshold of 0 never motors (legsim.ts), so
   // the narrow passages are sailed along the mesh route too (2026-10-08,
   // the owner's decision); above 0 they are motored.
   const sailOnly = inp.sim.modePolicy === 'sail_max' && inp.sim.sailThreshMs <= 0 && inp.polar !== null;
-  const segs: MeshSegment[] = motor
-    ? [{ type: 'constrained', start: 0, end: res.path.length - 1 }]
-    : classifySegments(res.path, res.widths);
-  if (!motor)
-    progress(
-      0,
-      0,
-      `${tag}chart mesh: ${segs.length} segment(s): ${segs.filter(s => s.type === 'constrained').length} narrow (${sailOnly ? 'sailed along the mesh route, the sail threshold being 0' : 'motored along the mesh route'}), ${segs.filter(s => s.type === 'open').length} open water (isochrone search on the mesh)`
-    );
+  const segs: MeshSegment[] = classifySegments(res.path, res.widths);
+  progress(
+    0,
+    0,
+    `${tag}chart mesh: ${segs.length} segment(s): ${segs.filter(s => s.type === 'constrained').length} narrow (${sailOnly ? 'sailed along the mesh route, the sail threshold being 0' : 'motored along the mesh route'}), ${segs.filter(s => s.type === 'open').length} open water (isochrone search on the mesh)`
+  );
   /**
    * A segment along the mesh route itself, under the request's policy: a
    * narrow passage, an open stretch too short to search, or one whose
@@ -139,8 +137,8 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
    * each tested against the mesh; motor only below a positive threshold);
    * it fails the route when a stretch cannot be sailed, never motors
    * instead (2026-10-08, job 1c1fda5b: a failed search motored 106 km
-   * under a sail threshold of 0). Under fastest the walk picks per step;
-   * narrow passages are motored unless the request is sail only.
+   * under a sail threshold of 0). Under fastest and motor the walk picks
+   * per step; narrow passages are motored unless the request is sail only.
    */
   // Why the last walk along the mesh route could not be made (routeFromMeshPath), for the refusal's words.
   const stuck: { reason?: LegSimResult['reason'] } = {};
@@ -165,10 +163,10 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
       );
       return part;
     }
-    const policy: ModePolicy = seg.type === 'open' && !motor ? inp.sim.modePolicy : 'motor';
+    const policy: ModePolicy = seg.type === 'open' ? inp.sim.modePolicy : 'motor';
     stuck.reason = undefined;
     const part = routeFromMeshPath(pts, at, inp.vessel, inp.polar, wind, current, { ...inp.sim, modePolicy: policy }, stuck);
-    if (part && !motor)
+    if (part)
       progress(
         0,
         0,
@@ -194,42 +192,38 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     let part: Route | null = null;
     /** Why this open stretch's search failed, when it did: the stretch along the mesh route then carries a warning. */
     let searchFailed: string | null = null;
-    if (seg.type === 'open' && lenM >= MIN_OPEN_SEGMENT_M && !motor) {
+    if (seg.type === 'open' && lenM >= MIN_OPEN_SEGMENT_M) {
       const last = seg.end === res.path.length - 1;
       const prop = makeRouter(inp.router ?? DEFAULT_ROUTER, land, { ...inp.propagator, stages });
       try {
-        part = computeAvoidingLimits(
-          x => prop.computeRoute(x),
-          {
-            start: pts[0],
-            end: pts[pts.length - 1],
-            departureTime: at,
-            vessel: inp.vessel,
-            polar: inp.polar,
-            wind: inp.wind ?? undefined,
-            current,
-            corridor: meshCorridor(pts, res.widths.slice(seg.start, seg.end + 1)),
-            // The waypoint circles this stretch passes (an inner circle at its end is reached by the stretch's own end).
-            vias: viasIn(seg),
-            modePolicy: inp.sim.modePolicy,
-            sailThreshMs: inp.sim.sailThreshMs,
-            maxWindMs: inp.sim.maxWindMs,
-            maxSwhM: inp.sim.maxSwhM,
-            maxWindMode: inp.sim.maxWindMode,
-            maxSwhMode: inp.sim.maxSwhMode,
-            limitAvoidStrength: inp.sim.limitAvoidStrength,
-            comfortWeight: inp.sim.comfortWeight,
-            tackPenaltyS: inp.sim.tackPenaltyS,
-            forecastEndMs: inp.wind ? inp.wind.validRange[1].getTime() : undefined,
-            simStepM: inp.sim.simStepM,
-            arrivalRadiusM: last ? plan.arrivalRadiusM : undefined,
-            snapToExact: last ? plan.snapToExact : true,
-            onProgress: (s: number, tot: number, m: string) => progress(s, tot, `${label}: ${m}`),
-            onFrontier: inp.onFrontier,
-            shouldCancel,
-          },
-          m => progress(0, 0, `${label}: ${m}`)
-        );
+        part = prop.computeRoute({
+          start: pts[0],
+          end: pts[pts.length - 1],
+          departureTime: at,
+          vessel: inp.vessel,
+          polar: inp.polar,
+          wind: inp.wind ?? undefined,
+          current,
+          corridor: meshCorridor(pts, res.widths.slice(seg.start, seg.end + 1)),
+          // The waypoint circles this stretch passes (an inner circle at its end is reached by the stretch's own end).
+          vias: viasIn(seg),
+          modePolicy: inp.sim.modePolicy,
+          sailThreshMs: inp.sim.sailThreshMs,
+          maxWindMs: inp.sim.maxWindMs,
+          maxSwhM: inp.sim.maxSwhM,
+          maxWindMode: inp.sim.maxWindMode,
+          maxSwhMode: inp.sim.maxSwhMode,
+          limitAvoidStrength: inp.sim.limitAvoidStrength,
+          comfortWeight: inp.sim.comfortWeight,
+          tackPenaltyS: inp.sim.tackPenaltyS,
+          forecastEndMs: inp.wind ? inp.wind.validRange[1].getTime() : undefined,
+          simStepM: inp.sim.simStepM,
+          arrivalRadiusM: last ? plan.arrivalRadiusM : undefined,
+          snapToExact: last ? plan.snapToExact : true,
+          onProgress: (s: number, tot: number, m: string) => progress(s, tot, `${label}: ${m}`),
+          onFrontier: inp.onFrontier,
+          shouldCancel,
+        });
         progress(
           0,
           0,

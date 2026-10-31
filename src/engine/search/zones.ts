@@ -29,10 +29,10 @@ export interface SkeletonGuide extends SkeletonData {
   stepFor(pLon: number, pLat: number): { step: number; idx: number };
   /**
    * Where a parent at (pLon, pLat), nearest skeleton point `idx`, aims the
-   * centre of its heading sweep. In narrow water: the skeleton point one
-   * step ahead. In open water (the corridor wider than its probe there):
-   * one step along the skeleton's own direction from the parent itself, so
-   * a branch off the line keeps its offset instead of being pulled back.
+   * centre of its heading sweep. In narrow water (the step there limited by
+   * the width, stepAt): the skeleton point one step ahead. Elsewhere: one
+   * step along the skeleton's own direction from the parent itself, so a
+   * branch off the line keeps its offset instead of being pulled back.
    */
   targetForParent(idx: number, stepM: number, pLon?: number, pLat?: number): [number, number];
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
@@ -141,13 +141,18 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
       }
     }
     if (ti < 0) return [eLon, eLat];
-    // Open water: aim parallel to the skeleton from the parent itself.
-    // Aiming at the skeleton point pulled every branch back to the line,
-    // so a detour of hundreds of km could never form: Tonga → Auckland,
-    // the front never got more than 170 km off the direct line while a
-    // route 479 km west was 15 h faster.
-    // Narrow water keeps the skeleton aim, which is what finds channels.
-    if (pLon !== undefined && pLat !== undefined && widths && !Number.isFinite(widths[idx])) {
+    // Open and coastal water: aim parallel to the skeleton from the parent
+    // itself. Aiming at the skeleton point pulled every branch back to the
+    // line, so a detour of hundreds of km could never form: Tonga →
+    // Auckland, the front never got more than 170 km off the direct line
+    // while a route 479 km west was 15 h faster. Until 2026-10-30 only
+    // water wider than the width probe (Infinity) counted as open, so a
+    // coast within 30 km on one side, or a skeleton without widths, pinned
+    // the front to the line one step's lateral reach wide (measured on
+    // brain: 6 of 40 bins occupied at every stage); now only water narrow
+    // enough to shorten the step keeps the skeleton aim, which is what
+    // finds channels.
+    if (pLon !== undefined && pLat !== undefined && !(stepAt[idx] < candStepM)) {
       const b = haversineBearing(skeleton[idx].lon, skeleton[idx].lat, skeleton[ti].lon, skeleton[ti].lat);
       return projectAlongBearing(pLon, pLat, b, stepM);
     }

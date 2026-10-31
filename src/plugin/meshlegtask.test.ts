@@ -2,7 +2,8 @@
  * The mesh leg in a child process (childtask.ts 'mesh-leg',
  * meshlegtask.ts): a leg on a two-tile mesh on disk comes back as a
  * finished route with its progress streamed first and the charted depth
- * under its waypoints, under motor with calm wind and no currents.
+ * under its waypoints, under motor with calm wind and no currents (the
+ * open stretch searched under motor as under sail, 2026-10-30).
  */
 
 import { test } from 'node:test';
@@ -64,12 +65,15 @@ test('mesh-leg child task: the leg planned where the mesh is, progress streamed,
     assert.ok(r.ok, r.ok ? '' : r.reason);
     if (r.ok) {
       const wps = r.route.waypoints;
-      assert.equal(wps.length, 2, 'a straight line across the seam');
-      assert.ok(wps[0].time instanceof Date && wps[1].time > wps[0].time, 'dates survive the round trip');
+      const last = wps[wps.length - 1];
+      assert.ok(wps.length >= 2);
+      assert.ok(Math.abs(wps[0].lon - 0.25) < 1e-9 && Math.abs(last.lon - 1.75) < 1e-6, 'from the start across the seam to the end');
+      assert.ok(wps[0].time instanceof Date && last.time > wps[0].time, 'dates survive the round trip');
       assert.equal(wps[0].depthM, 10);
-      assert.equal(wps[1].depthM, 7.5);
+      assert.equal(last.depthM, 7.5);
       assert.equal(r.route.meshLeg, true);
-      assert.ok(r.route.totalDistanceM > 160_000 && r.route.totalDistanceM < 170_000, `${r.route.totalDistanceM} m`);
+      // Calm wind, motor: the searched route is the straight line (167 km) within a few per cent.
+      assert.ok(r.route.totalDistanceM > 160_000 && r.route.totalDistanceM < 1.05 * 167_000, `${r.route.totalDistanceM} m`);
     }
     const lines = events.filter(e => e.event === 'progress').map(e => (e.event === 'progress' ? e.message : ''));
     assert.ok(
@@ -81,7 +85,7 @@ test('mesh-leg child task: the leg planned where the mesh is, progress streamed,
       lines.join('\n')
     );
     assert.ok(
-      lines.some(m => /^chart mesh: charted depth under 2 of 2 waypoints$/.test(m)),
+      lines.some(m => /^chart mesh: charted depth under (\d+) of \1 waypoints$/.test(m)),
       lines.join('\n')
     );
   } finally {

@@ -1228,21 +1228,20 @@ times, ETAs and summary stay the real times, and each leg that goes over
 carries a `wind_over_limit` or `waves_over_limit` warning with the
 seconds over (worked out on the final route).
 
-The search keeps one branch per bin on its cost so far, so a branch that
-swings wide round water over a limit is dropped before the straight one
-reaches it and pays; on its own it would rarely go round. So when the
-route searched with avoid goes over a limit, the leg is searched again
-with that limit on block (the best way round), and the cheaper on time
-plus surcharge (strength × the seconds over) is kept; when there is no
-way round, the route goes through. The job log says which was kept and
-why. It chooses between going through and going round: a route that
-only clips the water, if cheaper than both, is not looked for. The second
-search runs only on legs that go over a limit.
+The surcharge is part of each candidate's cost wherever the route is
+chosen: the search's pruning and its final choice, the refined router's
+cross-track polish and the shortcut smoother all compare time plus that
+cost, so the route goes round such water where the way round costs less
+than the surcharge and through it where not, in one search. (The same
+cost carries the comfort weight.) Under block, a leg that spends time
+over a limit after the search, re-timed by a polish move or by the wait at
+an opening bridge, carries the same warning.
 
-The limits need the forecast: a Motor route loads none, so neither mode
-does anything there. They apply on coastline legs and on chart-mesh legs
-alike (the mesh search itself is motor only; its stretches are then
-timed with the limits).
+The limits apply on coastline legs and on chart-mesh legs alike, under
+sail and under power (the mesh search itself is a motor path; the open
+stretches along it are searched, the narrow ones timed with the limits).
+A route with `no_forecast` has no wind to judge, so the limits do nothing
+there.
 
 ### Comfort (rough water)
 
@@ -2208,7 +2207,7 @@ LineString `properties`:
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
 | `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
-| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"` (for a limit set to avoid, `detail` the seconds the leg spends over it; under block, a leg whose waypoint sample is over it), `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `"search_failed"` (the search on an open stretch of a chart-mesh leg failed and the stretch follows the mesh route instead; `from`/`to` the stretch's ends, `detail` the search's reason) or `"beat_motored"` (the refined router found no room to tack and motored the leg straight; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"` (`detail` the seconds the leg spends over the limit, worked out on the final route, block or avoid), `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `"search_failed"` (the search on an open stretch of a chart-mesh leg failed and the stretch follows the mesh route instead; `from`/`to` the stretch's ends, `detail` the search's reason) or `"beat_motored"` (the refined router found no room to tack and motored the leg straight; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
 | `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |

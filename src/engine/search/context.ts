@@ -186,7 +186,10 @@ export function buildContext(prop: PropagatorParams, args: ComputeRouteArgs): Se
     tackPenaltyS: args.tackPenaltyS,
   };
   const hasLimit = args.maxWindMs !== undefined || args.maxSwhM !== undefined;
-  const limitNote = hasLimit ? ' or over the wind/wave limit' : '';
+  // Named as a cause of a stuck move only when a limit blocks; a limit set to avoid stops nothing.
+  const blocks =
+    (args.maxWindMs !== undefined && args.maxWindMode !== 'avoid') || (args.maxSwhM !== undefined && args.maxSwhMode !== 'avoid');
+  const limitNote = blocks ? ' or over the wind/wave limit' : '';
   const lastTry = { tried: 0, land: 0, limited: 0, noGo: 0, stuck: 0, latestMs: 0 };
 
   const [sLon, sLat] = args.start;

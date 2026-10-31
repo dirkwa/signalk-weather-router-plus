@@ -33,7 +33,6 @@ import { enrichLegRanges, enrichWaypoints, RouteCancelled, ViasNotCrossedError, 
 import type { ProgressFn } from './progress';
 import { recomputePerWaypointMetadata, type Route, type StageFront } from './route';
 import { limitWarnings, rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from './smoother';
-import { computeAvoidingLimits } from './limitavoid';
 
 export type { LegWind } from './horizon';
 
@@ -519,16 +518,9 @@ async function openWaterLeg(
     onFrontier: inp.onFrontier ? (front: StageFront) => inp.onFrontier!(legIndex, front) : undefined,
     shouldCancel,
   };
-  // Limits set to avoid: the route searched through, compared with the way round (engine/limitavoid.ts).
-  const search = (a: typeof legArgs): Route =>
-    computeAvoidingLimits(
-      x => prop.computeRoute(x),
-      a,
-      m => progress(0, 0, `${tag}${m}`)
-    );
   let r: Route;
   try {
-    r = search(legArgs);
+    r = prop.computeRoute(legArgs);
   } catch (err) {
     // The corridor's automatic vias are only guidance: when the search
     // finds another passage (e.g. The Race instead of the gap past
@@ -543,7 +535,7 @@ async function openWaterLeg(
         .map(v => v.name ?? 'a narrow passage')
         .join(', ')}; routing again without them`
     );
-    r = search({ ...legArgs, vias: plan.vias.length ? plan.vias : undefined });
+    r = prop.computeRoute({ ...legArgs, vias: plan.vias.length ? plan.vias : undefined });
   }
   // Simplification: RDP, then the shortcut smoother.
   const nRdp = rdpSimplify(r, land, inp.simplifyM);

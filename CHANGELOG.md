@@ -46,6 +46,24 @@ uses [Semantic Versioning](https://semver.org/).
   "(limited); raise Min sail speed so that stretch is motored"; it now
   says it is over the limit and advises raising the limit, setting it to
   Avoid, or changing the departure.
+- **The search can widen on legs without a corridor and along coasts.**
+  The heading sweep aimed at the skeleton point ahead wherever the
+  corridor's width was not open water (wider than 60 km), and a leg
+  routed on the per-route skeleton (the coastline parts of a leg that
+  meets a chart mesh, the corridor fallback, `--no-water-grid`) had no
+  widths at all, so every branch was pulled back to the line and the
+  front stayed one step's lateral reach wide (measured: 6 of 40 bins at
+  every stage). No detour round rough water or water over a limit could
+  form there. Every skeleton now carries a width profile, and the sweep
+  aims at the skeleton only where the water is narrow enough to shorten
+  the step. Routes on such legs change.
+- **Motor routes read the forecast.** A Motor route loaded no forecast,
+  so its wind and wave limits and its comfort weight judged a calm sea and
+  never acted, on open water or on the chart mesh, and the mesh route was
+  walked whole under motor instead of its open stretches being searched.
+  A motor route now loads the forecast like any other (`no_forecast`
+  still routes with calm wind), and its open stretches on the mesh are
+  searched under motor as under sail.
 
 
 - **Where a leg joins the charts is chosen by distance over water.** The
@@ -92,16 +110,16 @@ uses [Semantic Versioning](https://semver.org/).
   `routing.maxWindMode`, `routing.maxSwhMode`, `routing.limitAvoidStrength`;
   request fields `max_wind_mode`, `max_swh_mode`, `limit_avoid_strength`;
   a Block/Avoid switch beside each limit and an Avoid strength on the web
-  page and in the Freeboard panel. The search alone rarely goes round
-  costly water (it keeps one branch per bin on its cost so far, so the
-  wide one is dropped before the straight one pays), so a leg that goes
-  over a limit set to avoid is searched again with the limit blocking, and
-  the cheaper on time plus surcharge is kept. Each leg over a limit set to
-  avoid carries a warning with the seconds over, worked out on the final
-  route, so simplification no longer drops it. The web page and the Freeboard
-  panel send a mode or strength only once the user has chosen it or the
-  routing settings have loaded, so the server's own setting applies until
-  then.
+  page and in the Freeboard panel. The surcharge is part of each
+  candidate's cost in the search, the terminal choice, the refined
+  router's polish and the shortcut smoother, so the route goes round such
+  water where that costs less than the surcharge and through it where
+  not. Each leg that spends time over a limit, block or avoid, carries a
+  `wind_over_limit` or `waves_over_limit` warning with the seconds over,
+  worked out on the final route, so simplification no longer drops it.
+  The web page and the Freeboard panel send a mode or strength only once
+  the user has chosen it or the routing settings have loaded, so the
+  server's own setting applies until then.
 
 - **Comfort on the Route tab.** The comfort setting (how much the route
   avoids rough water) is now a slider in the Route tab's new Limits and

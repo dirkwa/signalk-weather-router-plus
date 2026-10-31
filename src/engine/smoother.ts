@@ -237,28 +237,31 @@ export function revalidateLand(route: Route, land: LandTest): void {
 }
 
 /**
- * The legs of the final route that spend time over a limit set to avoid, as warnings on the route: each leg timed
+ * The legs of the final route that spend time over a wind or wave limit, as warnings on the route: each leg timed
  * again from its start waypoint's time, the sub-steps over the limit counted along the whole leg (`detail`: those
- * seconds). Worked out on the route as it stands after the search, the layout, simplification and the land check, so
- * the warnings are neither dropped by simplification nor numbered against the search's points. A limit set to block
- * keeps the search's own warnings (search/assemble.ts), as before.
+ * seconds). Worked out on the route as it stands after the search, the layout, simplification, the land check and
+ * any bridge wait, so the warnings are neither dropped by simplification nor numbered against the search's points,
+ * and a leg re-timed after the search (a polish move, a wait shifting the legs after it into other conditions) is
+ * judged as it now stands. Block and avoid alike: under block the time over is normally 0 (the search let nothing
+ * through), so a warning there is real. Earlier limit warnings on the route are replaced.
  */
 export function limitWarnings(
   route: Route,
   env: { vessel: VesselParams; polar: PolarDiagram | null; wind: WindSource; current: CurrentSource; sim: SimOptions }
 ): void {
   const s = env.sim;
-  const avoidWind = s.maxWindMs !== undefined && s.maxWindMode === 'avoid';
-  const avoidSwh = s.maxSwhM !== undefined && s.maxSwhMode === 'avoid';
-  if (!avoidWind && !avoidSwh) return;
+  if (s.maxWindMs === undefined && s.maxSwhM === undefined) return;
+  // Counted, not stopped: a limit set to block stops the simulator at its first step over, which says nothing about
+  // how long the leg is over; the count treats both limits as avoid (the surcharge it then adds is not read).
+  const count: SimOptions = { ...s, maxWindMode: 'avoid', maxSwhMode: 'avoid' };
   const warns: NonNullable<Route['warnings']> = (route.warnings ?? []).filter(
-    w => !(avoidWind && w.violation === 'wind_over_limit') && !(avoidSwh && w.violation === 'waves_over_limit')
+    w => w.violation !== 'wind_over_limit' && w.violation !== 'waves_over_limit'
   );
   const wps = route.waypoints;
   for (let i = 0; i + 1 < wps.length; i++) {
     const a = wps[i];
     const b = wps[i + 1];
-    const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, s);
+    const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, count);
     const at = { leg_index: i, from: [a.lon, a.lat] as [number, number], to: [b.lon, b.lat] as [number, number], repaired: false };
     if (r.overWindSeconds > 0) warns.push({ ...at, violation: 'wind_over_limit', detail: String(Math.round(r.overWindSeconds)) });
     if (r.overSwhSeconds > 0) warns.push({ ...at, violation: 'waves_over_limit', detail: String(Math.round(r.overSwhSeconds)) });

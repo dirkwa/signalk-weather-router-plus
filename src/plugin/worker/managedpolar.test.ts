@@ -12,7 +12,8 @@ import type { WorkerState } from './state';
 import { route } from './route';
 
 // Exercise the worker, not just token classification: motor requests with either
-// managed token must finish without a provider, forecast or local polar file.
+// managed token must finish without a provider or local polar file (and, with
+// no_forecast, without a forecast: a motor route reads one otherwise, 2026-10-30).
 test('motor routes ignore managed polar tokens and complete without a provider', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-motor-polar-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -39,6 +40,7 @@ test('motor routes ignore managed polar tokens and complete without a provider',
       start: { lat: 0, lon: 0 },
       end: { lat: 0, lon: 0.01 },
       mode: 'motor',
+      no_forecast: true,
       no_currents: true,
       avoid_areas: false,
       vessel: { polar: token },

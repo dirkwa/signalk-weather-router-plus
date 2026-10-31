@@ -19,6 +19,9 @@
  * The corridor comes from the global water grid (data/water-grid-0.02.bin.gz
  * by default; `--water-grid <file>` for another, `--no-water-grid` for the
  * old per-route skeleton); `--allow-canals` opens known canals.
+ * Limits: `--max-wind <m/s>`, `--max-swh <m>`, each `--max-wind-mode` /
+ * `--max-swh-mode block|avoid` (default block), `--avoid-strength <n>` (the
+ * extra seconds per second over a limit set to avoid; default 1).
  */
 
 import * as fs from 'node:fs';
@@ -38,7 +41,7 @@ import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
 import type { Route } from './engine/route';
 import { routeToGeoJSON } from './plugin/routeformat';
-import type { ModePolicy } from './engine/legsim';
+import { LIMIT_MODES, type LimitMode, type ModePolicy } from './engine/legsim';
 import { PolarDiagram } from './vessel/polar';
 import { makeVessel } from './vessel/vessel';
 
@@ -75,6 +78,23 @@ async function main(): Promise<void> {
   const cacheDir = arg('cache', './ecmwf-cache')!;
   const stages = Number(arg('stages', '20'));
   const motorKts = Number(arg('motor-kts', '6'));
+  const limitNum = (name: string): number | undefined => {
+    const v = arg(name);
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`--${name}: expected a number >= 0 (got "${v}")`);
+    return n;
+  };
+  const limitMode = (name: string): LimitMode => {
+    const v = arg(name, 'block')!;
+    if (!(LIMIT_MODES as readonly string[]).includes(v)) throw new Error(`--${name}: expected ${LIMIT_MODES.join(' or ')} (got "${v}")`);
+    return v as LimitMode;
+  };
+  const maxWindMs = limitNum('max-wind');
+  const maxSwhM = limitNum('max-swh');
+  const maxWindMode = limitMode('max-wind-mode');
+  const maxSwhMode = limitMode('max-swh-mode');
+  const limitAvoidStrength = limitNum('avoid-strength');
   const viasArg = arg('via');
   const vias: Stop[] | undefined = viasArg
     ? viasArg.split(';').map(v => {
@@ -154,7 +174,16 @@ async function main(): Promise<void> {
     propagator: { subsectors: d.subsectors, headings: d.headings, headingIncrementDeg: d.headingIncrement },
     vessel,
     polar,
-    sim: { modePolicy: mode, sailThreshMs: d.sailThreshold, simStepM: d.simStep },
+    sim: {
+      modePolicy: mode,
+      sailThreshMs: d.sailThreshold,
+      simStepM: d.simStep,
+      maxWindMs,
+      maxSwhM,
+      maxWindMode,
+      maxSwhMode,
+      limitAvoidStrength,
+    },
     simplifyM: d.simplify,
     smoother: d.smoother,
     smootherTolerance: d.smootherTolerance,

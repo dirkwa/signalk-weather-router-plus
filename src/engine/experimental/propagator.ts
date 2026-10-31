@@ -227,7 +227,7 @@ export class ExperimentalPropagator {
 
   /** Time b's arrival from a (at a's time) with the real polar, setting its mode and mixed-mode split; a leg that cannot be sailed fails the route. */
   private timeLeg(a: Waypoint, b: Waypoint, env: Env): void {
-    if (this.tryTimeLeg(a, b, env)) return;
+    if (this.tryTimeLeg(a, b, env) !== null) return;
     const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, env.sim);
     // A leg stopped by a wind or wave limit set to block: the caller's advice (motor more) does not help; the limit does.
     const limited = r.reason === 'limited';
@@ -236,15 +236,18 @@ export class ExperimentalPropagator {
     );
   }
 
-  /** As timeLeg, returning false instead of failing when the leg cannot be sailed. */
-  private tryTimeLeg(a: Waypoint, b: Waypoint, env: Env): boolean {
+  /**
+   * As timeLeg, returning the leg's cost beyond its time (the comfort cost and the avoid surcharge, seconds; what the
+   * polish judges a move on besides the arrival), or null instead of failing when the leg cannot be sailed.
+   */
+  private tryTimeLeg(a: Waypoint, b: Waypoint, env: Env): number | null {
     const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, env.sim);
-    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return false;
+    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return null;
     b.mode = r.dominantMode === 'sailing' ? 'sailing' : 'motoring';
     if (r.sailingSeconds > 0 && r.motoringSeconds > 0) b.arrivingSplit = [r.sailingSeconds, r.motoringSeconds];
     else delete b.arrivingSplit;
     b.time = new Date(a.time.getTime() + r.seconds * 1000 + (b.tack ? (env.sim.tackPenaltyS ?? TACK_PENALTY_S) * 1000 : 0));
-    return true;
+    return r.penaltySeconds;
   }
 
   /** The two true headings a course at (lon, lat, t) is a mix of, or null when the polar sails it directly. */

@@ -174,7 +174,8 @@ function meshLegRunner(
 ): MeshLegRunner | undefined {
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
-  const useForecast = !request.no_forecast && request.mode !== 'motor';
+  // A motor route reads the forecast too: its speed does not depend on the wind, but its limits and its comfort do.
+  const useForecast = !request.no_forecast;
   const roughCut = (m: OpenMesh, rules: MeshRules, tag: string, progress: MeshLegArgs['progress'], signal: AbortSignal) =>
     ensureRoughCut(st, m, rules, tag, progress, signal, stores);
   return {
@@ -725,8 +726,10 @@ export async function route(
       }
     }
     const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
-    const useForecast = !request.no_forecast && request.mode !== 'motor';
-    if (request.mode !== 'motor' && request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
+    // A motor route reads the forecast too (until 2026-10-30 it did not, so its wind and wave limits and its comfort
+    // weight judged a calm sea and never acted): the speed under power is the same in any wind, the limits are not.
+    const useForecast = !request.no_forecast;
+    if (request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
     let wind: ForecastStore | null = null;
     let cycleLabel: string | undefined;
     // Regional wind (signalk-grib-downloader runs decoded by the data
