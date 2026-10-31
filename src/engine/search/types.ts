@@ -52,6 +52,14 @@ export interface CorridorInput {
   source?: string;
 }
 
+/** The heading sweep when the options give none: 30 headings each side of the aim, 1° apart (a 60° fan). */
+export const DEFAULT_HEADINGS = 30;
+export const DEFAULT_HEADING_INCREMENT_DEG = 1.0;
+/** The sweep's half angle, degrees, for a set of options (the fan the search steers within at every stage). */
+export function fanHalfDeg(opts: Pick<PropagatorOptions, 'headings' | 'headingIncrementDeg'> = {}): number {
+  return Math.max(1, Math.floor(opts.headings ?? DEFAULT_HEADINGS)) * (opts.headingIncrementDeg ?? DEFAULT_HEADING_INCREMENT_DEG);
+}
+
 /** Bins across a narrow passage. */
 export const NARROW_BINS = 6;
 /** Stages in a row without the front coming closer to the destination (after the planned stages) before the search is called boxed in. */

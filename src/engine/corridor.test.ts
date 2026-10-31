@@ -15,7 +15,11 @@ import {
   widthProfile,
   nearestExactWater,
   waterAround,
+  searchReachM,
+  worldBox,
   CorridorError,
+  CORRIDOR_MARGIN_DEG,
+  WORLD_MAX_WIDTH_DEG,
   type AutoVia,
 } from './corridor';
 import type { ShapePolygon } from '../geo/shapefile';
@@ -383,6 +387,33 @@ test('land mask: outside its box is land (nothing was loaded there), so no leg p
   assert.equal(m.legCrossesLandExact(160, 5.8, 180, 5.8), true); // starts and ends outside
   assert.deepEqual([...m.legsCrossLandBulk([170, 170], [5.8, 5.8], [170, 166], [5.9, 7])], [0, 1]);
   assert.equal(m.clearAlong(170, 5.8, 0, 100_000).m < 50_000, true); // stops at the box edge (6.1°N), ~33 km north
+});
+
+test("worldBox: the search's world is the sweep's reach round the corridor, never under the margin, within the raster's limits", () => {
+  const base = { west: -1, east: 1, south: -1, north: 1 };
+  // A 70 km leg: the 30° fan reaches 35 km, under the 1° margin, so the box is the margin's (a coastal hop keeps its box).
+  assert.ok(Math.abs(searchReachM(70_000, 30) - 35_000) < 1e-6);
+  assert.deepEqual(worldBox(base, 70_000, 30), { west: -2, east: 2, south: -2, north: 2 });
+  // A 1,500 km leg: 750 km of reach at 30°, 6.74° at the equator, each side.
+  const long = worldBox(base, 1_500_000, 30);
+  const reachDeg = 750_000 / 111_194.9;
+  assert.ok(Math.abs(long.west - (-1 - reachDeg)) < 0.01 && Math.abs(long.north - (1 + reachDeg)) < 0.01, JSON.stringify(long));
+  // A 60° fan reaches sin 60° of the length; a 90° or wider fan the whole length.
+  assert.ok(Math.abs(searchReachM(1_500_000, 60) - 1_500_000 * Math.sin(Math.PI / 3)) < 1e-6);
+  assert.equal(searchReachM(1_500_000, 120), 1_500_000);
+  // A base that already carries the margin grows only by the rest of the reach.
+  const carried = worldBox({ west: -2, east: 2, south: -2, north: 2 }, 1_500_000, 30, CORRIDOR_MARGIN_DEG);
+  assert.ok(Math.abs(carried.west - long.west) < 1e-9 && Math.abs(carried.north - long.north) < 1e-9);
+  // Longitude widens with the latitude: at 60° N a degree of longitude is half as long.
+  const north = worldBox({ west: -1, east: 1, south: 59, north: 61 }, 1_500_000, 30);
+  assert.ok(Math.abs(north.west - (-1 - reachDeg / Math.cos((60 * Math.PI) / 180))) < 0.05, JSON.stringify(north));
+  // The raster's limits hold: a 100°-wide base grows at most 10° each side, whatever the reach.
+  const wide = worldBox({ west: -50, east: 50, south: -1, north: 1 }, 20_000_000, 90);
+  assert.ok(Math.abs(wide.west - -60) < 1e-9 && Math.abs(wide.east - 60) < 1e-9, JSON.stringify(wide));
+  assert.equal(Math.round(wide.east - wide.west), WORLD_MAX_WIDTH_DEG);
+  // Across the antimeridian the box stays the short way round.
+  const dateline = worldBox({ west: 178, east: -178, south: -1, north: 1 }, 70_000, 30);
+  assert.deepEqual(dateline, { west: 177, east: -177, south: -2, north: 2 });
 });
 
 test("mergeVias puts each segment's automatic vias before the user via ending it", () => {

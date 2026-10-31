@@ -90,6 +90,7 @@ function corridorAlong(widths: number[], shore: number[] = widths.map(() => Infi
     shoreM: Float64Array.from(shore),
     lengthM,
     bbox: { west: -1, south: -1, east: 2, north: 1 },
+    reachM: 0,
     land: LandMask.fromPolygons([], { west: -1, south: -1, east: 2, north: 1 }, 0.05),
     autoVias: [
       { lon: 0.1, lat: 0, radiusM: 500, widthM: 800, axisDeg: 90, name: 'narrows', segment: 0, pathIndex: 5 },

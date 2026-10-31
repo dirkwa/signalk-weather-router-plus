@@ -19,7 +19,17 @@ import type { LandMask } from '../geo/landmask';
 import type { WaterGrid } from '../geo/watergrid';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
-import { CorridorError, mergeVias, planCorridor, type ChainVia, type Corridor } from './corridor';
+import {
+  CORRIDOR_MARGIN_DEG,
+  CorridorError,
+  mergeVias,
+  planCorridor,
+  searchReachM,
+  worldBox,
+  type ChainVia,
+  type Corridor,
+} from './corridor';
+import { fanHalfDeg } from './search/types';
 import { NoWind, type CurrentSource } from './environment';
 import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
@@ -395,6 +405,7 @@ function corridorFor(inp: LegPipelineInputs, chain: [number, number][], tag: str
       corridor = planCorridor(inp.waterGrid, chain, {
         landFor: inp.landFor,
         stages,
+        fanHalfDeg: fanHalfDeg(inp.propagator),
         onProgress: (_s, _t, m) => progress(0, 0, `${tag}corridor: ${m}`),
         shouldCancel,
       });
@@ -464,19 +475,35 @@ async function openWaterLeg(
   const { progress, shouldCancel, multi, stages } = inp;
   const legEnd = plan.end;
   const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), legEnd];
+  // The search's world: the land raster's box (outside it is land). The corridor's box is already the sweep's reach
+  // wide (corridor.ts worldBox); a leg without one, or one whose area the caller fixed, widens its box the same way
+  // over the chain's straight length.
+  let chainM = 0;
+  for (let i = 1; i < chain.length; i++) chainM += haversineDistanceM(chain[i - 1][0], chain[i - 1][1], chain[i][0], chain[i][1]);
+  const fan = fanHalfDeg(inp.propagator);
   let bbox: BBox;
+  let reachM: number;
   if (corridor) {
     bbox = corridor.bbox;
+    reachM = corridor.reachM;
   } else if (area) {
-    bbox = area;
+    bbox = worldBox(area, chainM, fan, CORRIDOR_MARGIN_DEG);
+    reachM = searchReachM(chainM, fan);
   } else {
-    bbox = bboxFromLonLat(
+    const near = bboxFromLonLat(
       chain.map(p => p[0]),
       chain.map(p => p[1]),
-      1.0
+      CORRIDOR_MARGIN_DEG
     );
-    if (bboxWidth(bbox) > 120 || bboxHeight(bbox) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
+    if (bboxWidth(near) > 120 || bboxHeight(near) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
+    bbox = worldBox(near, chainM, fan, CORRIDOR_MARGIN_DEG);
+    reachM = searchReachM(chainM, fan);
   }
+  progress(
+    0,
+    0,
+    `${tag}search area: {angle:${bboxWidth(bbox) * (Math.PI / 180)}} × {angle:${bboxHeight(bbox) * (Math.PI / 180)}}; the heading sweep (±{angle:${fan * (Math.PI / 180)}}) can reach {distance:${reachM.toFixed(0)}} either side of the leg's line`
+  );
   const land = corridor ? corridor.land : inp.landFor(bbox);
   if (shouldCancel()) throw new RouteCancelled();
   // Forecast and SMOC areas per leg (measured on brain: the same time as

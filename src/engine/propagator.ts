@@ -53,7 +53,7 @@ import { buildSkeleton } from './search/skeleton';
 import { runStages } from './search/stages';
 import { chooseTerminal } from './search/terminal';
 import { buildGuide } from './search/zones';
-import type { ComputeRouteArgs, PropagatorOptions } from './search/types';
+import { DEFAULT_HEADING_INCREMENT_DEG, DEFAULT_HEADINGS, type ComputeRouteArgs, type PropagatorOptions } from './search/types';
 import type { LandTest } from '../geo/landmask';
 import type { Route } from './route';
 
@@ -86,8 +86,8 @@ export class OceanPropagator {
   ) {
     this.K = Math.max(1, Math.floor(opts.stages ?? 20));
     this.k = Math.max(1, Math.floor(opts.subsectors ?? 30));
-    this.m = Math.max(1, Math.floor(opts.headings ?? 30));
-    this.deltaC = opts.headingIncrementDeg ?? 1.0;
+    this.m = Math.max(1, Math.floor(opts.headings ?? DEFAULT_HEADINGS));
+    this.deltaC = opts.headingIncrementDeg ?? DEFAULT_HEADING_INCREMENT_DEG;
     this.skeletonResolutionDeg = opts.skeletonResolutionDeg ?? 0.005;
     this.skeletonPaddingDeg = opts.skeletonPaddingDeg ?? 1.0;
   }

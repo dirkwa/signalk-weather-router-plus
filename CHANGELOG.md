@@ -8,6 +8,22 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The search's world is as wide as the search can reach.** The land
+  raster's box, outside which every point counts as land, was the
+  corridor plus 1°, so on a long leg the search could never consider a
+  detour more than about 80 km off the corridor, whatever the effort,
+  the avoid strength or the weather: on a Placentia Bay to mid-Atlantic
+  leg the front pressed on the box's west edge for 35 stages while the
+  water under the wave limit lay 150 km beyond it. The box is now widened
+  to the heading sweep's reach over the leg (its length × the sine of the
+  sweep's half angle), per side, never under the 1° it had, and within the
+  raster's 120° × 90° limit. Legs under about 200 km at the normal sweep
+  keep their box, and the coastal raster its cell size. Measured on brain
+  (2026-10-31, that leg, Maximum effort): time over the wave limit 36,082
+  s → 22,920 s, the roughest seas met 3.3 m → 3.1 m, for 2.2 h more
+  passage; at the normal sweep the route is unchanged. The progress log
+  names the search area and the reach.
+
 - An open stretch ending where the leg joins the chart mesh no longer
   stalls when that point lies up a channel the search's straight moves
   cannot enter: with no clear straight final leg, the last part follows

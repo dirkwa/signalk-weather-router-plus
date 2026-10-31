@@ -87,6 +87,45 @@ test('pipeline without a water grid and without simplification equals the propag
   assert.ok(!messages.some(m => /corridor/.test(m)), 'no corridor without a water grid');
 });
 
+test("pipeline without a water grid: the land raster's box is the sweep's reach round the leg, at least the 1° margin", async () => {
+  const land = LandMask.fromPolygons([rect(1, 0.3, -0.3, 0.7, 1.3)], BBOX, 0.005);
+  const [plan] = planLegs(
+    [
+      { lon: 0, lat: 0.5 },
+      { lon: 1.9, lat: 0.5 },
+    ],
+    'precise',
+    300
+  );
+  const run = async (
+    headings: number
+  ): Promise<{ box: { west: number; east: number; south: number; north: number }; messages: string[] }> => {
+    const boxes: { west: number; east: number; south: number; north: number }[] = [];
+    const { inp, messages } = inputs(land, {
+      propagator: { subsectors: 20, headings, headingIncrementDeg: 1 },
+      landFor: b => {
+        boxes.push(b);
+        return land;
+      },
+    });
+    await runLegPipeline(inp, plan, 0, [0, 0.5], T0);
+    return { box: boxes[0], messages };
+  };
+  // A 211 km leg. The 30° fan reaches 106 km, 0.95° at this latitude, under the 1° margin: the box is the leg plus 1°.
+  const narrow = await run(30);
+  assert.ok(Math.abs(narrow.box.west - -1) < 0.02 && Math.abs(narrow.box.east - 2.9) < 0.02, JSON.stringify(narrow.box));
+  // A 90° fan reaches the whole 211 km, 1.9°: the box grows to the leg plus 1.9°, and the progress line says so.
+  const wide = await run(90);
+  assert.ok(Math.abs(wide.box.west - -1.9) < 0.02 && Math.abs(wide.box.east - 3.8) < 0.02, JSON.stringify(wide.box));
+  assert.ok(Math.abs(wide.box.north - 2.4) < 0.02 && Math.abs(wide.box.south - -1.4) < 0.02, JSON.stringify(wide.box));
+  assert.ok(
+    wide.messages.some(m =>
+      /^search area: \{angle:[\d.]+\} × \{angle:[\d.]+\}; the heading sweep \(±\{angle:[\d.]+\}\) can reach \{distance:2\d{5}\}/.test(m)
+    ),
+    wide.messages.filter(m => /^search area/.test(m)).join('\n')
+  );
+});
+
 test('pipeline: simplification keeps the route land-free and reports it; the current names travel with the route', async () => {
   const land = LandMask.fromPolygons([rect(1, 0.3, -0.3, 0.7, 1.3)], BBOX, 0.005);
   const [plan] = planLegs(
