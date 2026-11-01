@@ -387,7 +387,7 @@ test('corridor: a start on land is a fatal error; a missing water path is a corr
   );
 });
 
-test('width profile: an islet on the skeleton is not a narrow passage; a strait is', () => {
+test('width profile: a strait reads its width, open water is open', () => {
   const m = LandMask.fromCoastline(COAST, { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
   // Along lon 170 through the channel: width ≈ 0.02° · cos(0) · 111 km ≈ 2.2 km.
   const pts = [
@@ -405,6 +405,47 @@ test('width profile: an islet on the skeleton is not a narrow passage; a strait 
     { lon: 150.1, lat: 0 },
   ]);
   assert.equal(w2[0], Infinity);
+});
+
+/** A rectangle as a decoded polygon (LandMask.fromPolygons). */
+function poly(recordNumber: number, w: number, s: number, e: number, n: number): ShapePolygon {
+  const c = [w, s, e, s, e, n, w, n, w, s];
+  return {
+    recordNumber,
+    minLon: w,
+    minLat: s,
+    maxLon: e,
+    maxLat: n,
+    rings: [{ coords: Float64Array.from(c), minLon: w, minLat: s, maxLon: e, maxLat: n }],
+  };
+}
+
+test('width profile: the water the point sits in, so a channel behind a thin barrier reads the channel, not the sea beyond', () => {
+  const box = { west: 0, south: 0, east: 0.6, north: 0.6 };
+  const m = 1 / 111_195;
+  // A 1 km channel along lat 0.30 east–west: mainland south of it, a barrier of thickness t north of it, open sea
+  // beyond to the box's edge (33 km). Until 2026-11-01 a barrier under about 2 km read as 28–29 km.
+  const pts = Array.from({ length: 11 }, (_v, k) => ({ lon: 0.1 + k * 0.04, lat: 0.3 }));
+  for (const tM of [200, 1000, 4000]) {
+    const land = LandMask.fromPolygons(
+      [poly(1, 0, 0, 0.6, 0.3 - 500 * m), poly(2, 0, 0.3 + 500 * m, 0.6, 0.3 + 500 * m + tM * m)],
+      box,
+      0.001
+    );
+    const w = widthProfile(land, pts);
+    for (const v of w) assert.ok(v > 800 && v < 1300, `barrier ${tM} m: width ${v}`);
+  }
+  // An islet beside the line narrows the lane the point is in to the water on its side of the islet.
+  const islet = LandMask.fromPolygons([poly(1, 0.298, 0.3 + 300 * m, 0.302, 0.3 + 500 * m)], box, 0.001);
+  const wi = widthProfile(islet, [
+    { lon: 0.29, lat: 0.3 },
+    { lon: 0.3, lat: 0.3 },
+    { lon: 0.31, lat: 0.3 },
+  ]);
+  assert.equal(wi[0], Infinity, 'open water before the islet');
+  assert.ok(wi[1] > 30_000 && wi[1] < 30_500, `beside the islet: the 30 km cap to the south plus the 300 m to it (${wi[1]})`);
+  // A point on land reads 0: the corridor treats it as a narrow stretch and re-traces the skeleton into the water.
+  assert.equal(widthProfile(islet, [{ lon: 0.3, lat: 0.3 + 400 * m }])[0], 0);
 });
 
 test('land mask: outside its box is land (nothing was loaded there), so no leg passes over unloaded coast', () => {

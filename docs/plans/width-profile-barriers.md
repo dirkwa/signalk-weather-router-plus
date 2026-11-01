@@ -1,7 +1,13 @@
 # Plan: the width of a passage behind a thin barrier
 
-Status: **proposed** 2026-11-01, not started; the rule is to be chosen from
-real coasts measured first (below). From the PR #91 review
+Status: **built** 2026-11-01, the owner's choice B: the width is the water
+the point sits in, with no look-around for a point on land; such a point
+reads 0 and is a narrow stretch, which the corridor's existing refinement
+and fine re-trace move into the water (`widthProfile` in
+`src/engine/corridor.ts`; tests in `corridor.test.ts`: barrier 200 m, 1 km,
+4 km, islet beside the line, a point on land). The no-corridor skeleton's
+points are water by construction (`buildCoarseGrid`: passable where the
+cell centre is water). From the PR #91 review
 (`src/engine/search/skeleton.ts:130`, 2026-11-01).
 
 ## What the profile does (`src/engine/corridor.ts` widthProfile)

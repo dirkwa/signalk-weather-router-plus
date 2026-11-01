@@ -600,15 +600,21 @@ export function verifyCorridor(
 // Width profile
 
 /**
- * Across-track passage width at each point, metres: along the line
- * through the point perpendicular to the skeleton (sampled on the route
- * raster out to `capM` each side), the longest run of water that comes
- * within `nearM` of the point. An islet on the skeleton therefore does not
- * read as a narrow passage (the water beside it is the passage), while a
- * strait reads as its width. Infinity when that run reaches the cap on
- * both sides.
+ * Across-track passage width at each point, metres: the water the point
+ * sits in, along the line through the point perpendicular to the skeleton
+ * (sampled on the route raster out to `capM` each side), from the land on
+ * one side to the land on the other. Infinity when it reaches the cap both
+ * ways; 0 at a point on land. Until 2026-11-01 it was the longest run of
+ * water within 2.5 km of the point, which let a channel behind a barrier
+ * thinner than that read as the sea beyond it (measured: a 1 km channel
+ * behind 200 m to 1 km of barrier read 28–29 km; the Lauwersoog inlet and
+ * the Halifax approach read 28 km where the water was 2–4 km;
+ * docs/plans/width-profile-barriers.md). A skeleton point on land (a water
+ * grid cell's centre on an islet or a bank) reads 0 and is thereby a narrow
+ * stretch: the corridor refines and re-traces it on the raster into the
+ * water (planCorridor), where the width is then that water's.
  */
-export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[], capM = WIDTH_RAY_CAP_M, nearM = 2500): Float64Array {
+export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[], capM = WIDTH_RAY_CAP_M): Float64Array {
   const out = new Float64Array(pts.length);
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
@@ -622,30 +628,31 @@ export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[]
     const sb = Math.sin(perp);
     const cb = Math.cos(perp);
     const n = Math.ceil(capM / stepM);
-    let runStart = -Infinity; // offset where the current water run began (-Infinity: open from the cap)
-    let best = 0;
-    let bestOpen = false;
-    for (let k = -n; k <= n + 1; k++) {
-      const d = k * stepM;
-      const isLand = k <= n && land.isLand(wrapLon(p.lon + (d * sb) / (M_PER_DEG * cosLat)), p.lat + (d * cb) / M_PER_DEG);
-      if (k <= n && !isLand) {
-        if (runStart === Infinity) runStart = d;
-        continue;
-      }
-      // Run [runStart, d) ended (land at d, or the cap).
-      if (runStart !== Infinity) {
-        const lo = runStart === -Infinity ? -capM : runStart;
-        const hi = k > n ? capM : d;
-        if (lo <= nearM && hi >= -nearM) {
-          const len = hi - lo;
-          const open = runStart === -Infinity && k > n;
-          if (open) bestOpen = true;
-          else if (len > best) best = len;
-        }
-      }
-      runStart = Infinity; // inside land
+    const isLand = (d: number): boolean => land.isLand(wrapLon(p.lon + (d * sb) / (M_PER_DEG * cosLat)), p.lat + (d * cb) / M_PER_DEG);
+    if (isLand(0)) {
+      out[i] = 0;
+      continue;
     }
-    out[i] = bestOpen ? Infinity : best > 0 ? best : stepM;
+    // Outward each way to the first land sample, or the cap.
+    let hi = capM;
+    let hiOpen = true;
+    for (let k = 1; k <= n; k++) {
+      if (isLand(k * stepM)) {
+        hi = k * stepM;
+        hiOpen = false;
+        break;
+      }
+    }
+    let lo = -capM;
+    let loOpen = true;
+    for (let k = 1; k <= n; k++) {
+      if (isLand(-k * stepM)) {
+        lo = -k * stepM;
+        loOpen = false;
+        break;
+      }
+    }
+    out[i] = loOpen && hiOpen ? Infinity : hi - lo;
   }
   return out;
 }

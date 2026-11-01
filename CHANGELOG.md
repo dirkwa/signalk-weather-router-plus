@@ -71,6 +71,18 @@ uses [Semantic Versioning](https://semver.org/).
   mask is compared against the polygon-built one in the tests, patches and
   buffer included); less memory, and an exact test no longer scans every
   polygon of the world (PR #91 review; docs/plans/land-mask-from-tiles.md).
+- **A passage's width is the water the route is in.** The width profile
+  (the step limits in narrow water, the bins across a passage, where the
+  sweep aims at the skeleton, the local refinement and the fine re-trace)
+  took the longest run of water within 2.5 km of each skeleton point, so a
+  channel behind a barrier thinner than that read as the sea beyond it
+  (measured 2026-11-01: a 1 km channel behind 200 m to 1 km of barrier
+  read 28–29 km; the Lauwersoog inlet and the Halifax approach read 28 km
+  where the water was 2–4 km). It is now the water the point sits in, from
+  shore to shore. A skeleton point that lies on land (a water grid cell's
+  centre on an islet or a bank, the case the 2.5 km window served) reads 0
+  and is re-traced into the water as a narrow stretch, which the corridor
+  already did for narrow water (docs/plans/width-profile-barriers.md).
 - **The search's stall rule measures progress along the water.** A front
   that came no closer to its goal for three stages after the planned ones
   was refused as boxed in, with "closer" measured straight through land: a
