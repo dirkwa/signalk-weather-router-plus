@@ -1986,6 +1986,9 @@ map.on('moveend', function() {
   const [lon, lat] = ol.proj.toLonLat(c);
   try { localStorage.setItem('rp:view', JSON.stringify({ lon, lat, zoom: v.getZoom() })); } catch (_) {}
 });
+// A pan or pinch under way has not reached moveend yet: a fix that comes
+// during it must not pull the map out from under the user (PR #70 review).
+map.on('pointerdrag', function() { _autoCentreOnVessel = false; });
 // The first Signal K fix of the load opens the map on the boat (rp-plan.js).
 // Not while the view is animating: something else (a route being fitted)
 // is moving the map already.
