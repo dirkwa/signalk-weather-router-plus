@@ -59,6 +59,18 @@ uses [Semantic Versioning](https://semver.org/).
   choice now goes on to 0.02°, 0.05° and 0.1° until the budget holds; the
   band along the route keeps its own finer cells. No leg under the budget
   changes (PR #91 review).
+- **A route's land mask no longer holds the world's coastline polygons.**
+  The mask decoded every coastline piece in its box and kept them for the
+  exact tests, unbounded by the cell budget: 110,000 polygons and 270 MB
+  of process memory for a search world at its 120° × 90° limit, 14 MB on
+  the Placentia Bay leg at Maximum effort (brain, 2026-11-01). The raster
+  and the band's finer patches are now drawn from the coastline tiles'
+  bytes, as the map's land layer already was, and each exact test reads
+  the pieces of the tiles it touches, served by the tile store's 24 MB
+  per-thread cache. Same raster, same pieces, same answers (the tile-built
+  mask is compared against the polygon-built one in the tests, patches and
+  buffer included); less memory, and an exact test no longer scans every
+  polygon of the world (PR #91 review; docs/plans/land-mask-from-tiles.md).
 - **The world's longitude margin holds at its poleward edge.** The sweep's
   reach was turned into degrees of longitude at the box's middle latitude,
   so towards the poleward end of a long high-latitude leg the same metres

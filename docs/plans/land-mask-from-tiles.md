@@ -1,6 +1,11 @@
 # Plan: a route's land mask without the world's polygons
 
-Status: **proposed** 2026-11-01, not started. Raised by the PR #91 review
+Status: **built** 2026-11-01 (the change below as written; `rawraster.ts`
+now exports `drawRasterFromTiles`, the bytes and their dimensions, and
+`LandMask.fromTiles` wraps them for the map's land layer and the water-grid
+build). The before measurements are in the table below and in
+`~/pr91-review/maskmem.js` on brain; the after measurements follow in the
+PR. Raised by the PR #91 review
 (`src/engine/corridor.ts:819`, 2026-11-01 02:53Z): the search's world is now
 as wide as the heading sweep can reach (`worldBox`), the raster's cell
 budget holds for any world (`LandMask.chooseResolution`, 2026-11-01), but

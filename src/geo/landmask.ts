@@ -31,6 +31,7 @@ import { M_PER_DEG } from './units';
 import { pointInShape, wholeAt, type Ring, type ShapePolygon } from './shapefile';
 import type { CoastTiles } from './coasttiles';
 import { avoidAt, legHitsAvoid, type AvoidArea } from './avoid';
+import { drawRasterFromTiles } from './rawraster';
 
 export interface SerializedLandRaster {
   bbox: BBox;
@@ -122,7 +123,16 @@ export class LandMask implements LandTest {
   readonly ny: number;
   /** 1 = land, 0 = water. Row 0 is the southernmost row. */
   readonly raster: Uint8Array;
+  /** The polygons kept for the exact tests (a mask built from polygons); empty for one built from the coastline tiles. */
   readonly shapes: ShapePolygon[];
+  /**
+   * The coastline's tile store for a mask built from it (fromCoastline): the raster was drawn from the tiles' bytes
+   * and the exact tests read the pieces of the tiles they touch, so the world's polygons are never held (the tile
+   * store's own cache is the bound; docs/plans/land-mask-from-tiles.md). Null for a mask built from polygons.
+   */
+  readonly tiles: CoastTiles | null;
+  /** Coastline pieces the raster was drawn from (the polygons kept, or those read from the tiles). */
+  readonly pieces: number;
   /** Finer local rasters (see refine()); checked before the base raster. */
   readonly patches: LandPatch[] = [];
   /** Mark cells crossed by polygon edges (conservative raster). */
@@ -137,9 +147,13 @@ export class LandMask implements LandTest {
     bbox: BBox,
     resolutionDeg: number,
     raster?: Uint8Array,
-    dims?: { nx?: number; ny?: number; edgeCells?: boolean }
+    dims?: { nx?: number; ny?: number; edgeCells?: boolean },
+    tiles: CoastTiles | null = null,
+    pieces?: number
   ) {
     this.shapes = [...shapes].sort((a, b) => (a.level ?? 1) - (b.level ?? 1));
+    this.tiles = tiles;
+    this.pieces = pieces ?? this.shapes.length;
     this.bbox = bbox;
     this.resolutionDeg = resolutionDeg;
     this.nx = dims?.nx ?? Math.max(1, Math.ceil(bboxWidth(bbox) / resolutionDeg));
@@ -170,16 +184,18 @@ export class LandMask implements LandTest {
     return new LandMask([], s.bbox, s.resolutionDeg, s.raster, dims);
   }
 
-  /** True when polygon geometry is available for exact tests. */
+  /** True when exact geometry is available for the exact tests: polygons kept, or the coastline's tiles to read. */
   get hasPolygons(): boolean {
-    return this.shapes.length > 0;
+    return this.shapes.length > 0 || this.tiles !== null;
   }
 
   /**
-   * Load the coastline pieces in the tiles meeting `bbox` (plus `bufferDeg`
-   * margin) and rasterise them. The pieces come from the coastline's tile
-   * store (coasttiles.ts): only the coast near the box, never a whole
-   * continent.
+   * The land mask of `bbox` (plus `bufferDeg` margin) from the coastline's
+   * tile store (coasttiles.ts): the raster drawn from the tiles' bytes
+   * (rawraster.ts, no object per piece), the pieces not kept; the exact
+   * tests read the tiles they touch (`tiles`). Until 2026-11-01 the pieces
+   * of the whole box were decoded and kept, 110,000 polygons and 270 MB for
+   * a search world at its 120° × 90° limit (brain, PR #91 review).
    */
   static fromCoastline(coast: CoastTiles, bbox: BBox, opts: LandMaskOptions = {}): LandMask {
     const resolutionDeg = opts.resolutionDeg ?? 0.002;
@@ -192,7 +208,23 @@ export class LandMask implements LandTest {
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
-    return new LandMask(coast.read(padded), padded, resolutionDeg);
+    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, padded, resolutionDeg);
+    return new LandMask([], padded, resolutionDeg, raster, { nx, ny }, coast, pieces);
+  }
+
+  /**
+   * A raster-only mask of `bbox` at `res` from the coastline's tiles (the map's land layer, landcache.ts): the raster
+   * rasterStreamed would make from the same pieces, drawn from their bytes; no polygons and no tiles kept, so
+   * isLandExact is unavailable. `pieces`: how many were drawn.
+   */
+  static fromTiles(coast: CoastTiles, bbox: BBox, res: number, opts: RasterStreamOptions = {}): { mask: LandMask; pieces: number } {
+    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, bbox, res, opts);
+    return { mask: new LandMask([], bbox, res, raster, { nx, ny, edgeCells: opts.edgeCells }, null, pieces), pieces };
+  }
+
+  /** The pieces that can meet `box`: those kept (a mask from polygons), or the ones in the coastline tiles the box meets. */
+  private piecesIn(box: BBox): readonly ShapePolygon[] {
+    return this.tiles ? this.tiles.read(box) : this.shapes;
   }
 
   /**
@@ -239,7 +271,15 @@ export class LandMask implements LandTest {
     if (!(bufferM > 0)) return this;
     const [kx, ky] = this.cellsFor(bufferM, this.resolutionDeg);
     const raster = dilate(this.raster, this.nx, this.ny, kx, ky);
-    const m = new LandMask(this.shapes, this.bbox, this.resolutionDeg, raster, { nx: this.nx, ny: this.ny, edgeCells: this.edgeCells });
+    const m = new LandMask(
+      this.shapes,
+      this.bbox,
+      this.resolutionDeg,
+      raster,
+      { nx: this.nx, ny: this.ny, edgeCells: this.edgeCells },
+      this.tiles,
+      this.pieces
+    );
     (m as { bufferM: number }).bufferM = bufferM;
     return m;
   }
@@ -286,7 +326,7 @@ export class LandMask implements LandTest {
    * an equal-or-finer patch already covers it.
    */
   refine(bbox: BBox, resolutionDeg: number, maxCells = 4_000_000): LandPatch | null {
-    if (!this.hasPolygons) throw new Error('LandMask.refine needs polygons (raster-only masks cannot be refined)');
+    if (!this.hasPolygons) throw new Error('LandMask.refine needs polygons or the coastline tiles (raster-only masks cannot be refined)');
     if (!(resolutionDeg > 0) || resolutionDeg >= this.resolutionDeg) return null;
     // Snap the box to base-cell boundaries inside the base raster.
     const res0 = this.resolutionDeg;
@@ -326,19 +366,24 @@ export class LandMask implements LandTest {
         east: wrapLon(west + (x1 - x0) * res0 + kx * res),
         north: south + (y1 - y0) * res0 + ky * res,
       };
-      const shapes = this.shapes.filter(s => s.maxLat >= eb.south && s.minLat <= eb.north);
-      const grown = dilate(LandMask.rasterStreamed(eb, res, add => shapes.forEach(add), { nx: ex, ny: ey }).raster, ex, ey, kx, ky);
+      const grown = dilate(this.drawPatch(eb, res, ex, ey), ex, ey, kx, ky);
       praster = new Uint8Array(nx * ny);
       for (let j = 0; j < ny; j++) praster.set(grown.subarray((j + ky) * ex + kx, (j + ky) * ex + kx + nx), j * nx);
     } else {
-      const shapes = this.shapes.filter(s => s.maxLat >= pb.south && s.minLat <= pb.north);
-      praster = LandMask.rasterStreamed(pb, res, add => shapes.forEach(add), { nx, ny }).raster;
+      praster = this.drawPatch(pb, res, nx, ny);
     }
     const patch: LandPatch = { bbox: pb, resolutionDeg: res, nx, ny, raster: praster };
     // Finest first, so lookups hit the finest patch covering a point.
     this.patches.push(patch);
     this.patches.sort((a, b) => a.resolutionDeg - b.resolutionDeg);
     return patch;
+  }
+
+  /** A patch's conservative raster: from the coastline tiles the box meets, or from the polygons kept (those whose latitudes reach it). */
+  private drawPatch(box: BBox, res: number, nx: number, ny: number): Uint8Array {
+    if (this.tiles) return drawRasterFromTiles(this.tiles, box, res, { nx, ny }).raster;
+    const shapes = this.shapes.filter(s => s.maxLat >= box.south && s.minLat <= box.north);
+    return LandMask.rasterStreamed(box, res, add => shapes.forEach(add), { nx, ny }).raster;
   }
 
   /**
@@ -694,7 +739,7 @@ export class LandMask implements LandTest {
   isLandExact(lon: number, lat: number): boolean {
     // Outside the box nothing is loaded; unknown is land (see isLand).
     if (this.cellIndex(lon, lat) < 0 && !this.inAnyPatch(lon, lat)) return true;
-    if (this.edgeCells && this.shapes.length) {
+    if (this.edgeCells && this.hasPolygons) {
       for (const p of this.patches) {
         const pi = patchIndex(p, lon, lat);
         if (pi >= 0) {
@@ -713,7 +758,8 @@ export class LandMask implements LandTest {
     const cosLat = Math.max(0.05, Math.cos((lat * Math.PI) / 180));
     const dLat = distM / M_PER_DEG;
     const dLon = dLat / cosLat;
-    for (const s of this.shapes) {
+    const near = this.piecesIn({ west: wrapLon(lon - dLon), east: wrapLon(lon + dLon), south: lat - dLat, north: lat + dLat });
+    for (const s of near) {
       if (s.maxLon < lon - dLon || s.minLon > lon + dLon || s.maxLat < lat - dLat || s.minLat > lat + dLat) continue;
       for (const ring of s.rings) {
         if (ring.maxLon < lon - dLon || ring.minLon > lon + dLon || ring.maxLat < lat - dLat || ring.minLat > lat + dLat) continue;
@@ -743,8 +789,9 @@ export class LandMask implements LandTest {
     return false;
   }
 
-  /** Point-in-polygon over every loaded shape (no raster shortcut). */
+  /** Point-in-polygon over the exact geometry (no raster shortcut): the deepest level holding the point, land when odd. */
   isLandPolygons(lon: number, lat: number): boolean {
+    if (this.tiles) return this.tiles.containsPoint(lon, lat);
     let level = 0;
     for (const s of this.shapes) {
       if ((s.level ?? 1) > level && pointInShape(s, lon, lat)) level = s.level ?? 1;
@@ -840,14 +887,30 @@ export class LandMask implements LandTest {
     // through to the polygons, which hold nothing there: legs over unloaded islands passed, each after a scan of
     // every coastline ring near the leg (up to 1.8 s a check, the polish's 9 minutes on the Caribbean route).
     if (this.cellIndex(lonA, latA) < 0 || this.cellIndex(lonB, latB) < 0) return true;
-    if (this.edgeCells && this.shapes.length && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;
-    if (!this.shapes.length) return this.legCrossesRaster(lonA, latA, lonB, latB);
+    if (this.edgeCells && this.hasPolygons && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;
+    if (!this.hasPolygons) return this.legCrossesRaster(lonA, latA, lonB, latB);
     if (this.isLandPolygons(lonA, latA) || this.isLandPolygons(lonB, latB)) return true;
     // The buffer: every edge within it of the move, searched in a box grown by it.
     const cosLatB = Math.max(0.05, Math.cos((((latA + latB) / 2) * Math.PI) / 180));
     const dLatB = this.bufferM > 0 ? this.bufferM / M_PER_DEG : 0;
     const dLonB = dLatB / cosLatB;
     const { lons, lats } = greatCirclePieces(lonA, latA, lonB, latB);
+    // The pieces that can meet the move: those in the coastline tiles its box (grown by the buffer) meets, or the
+    // polygons kept; each ring is then rejected by its own box as before.
+    let legW = lonA;
+    let legE = lonA;
+    let legS = Math.min(latA, latB);
+    let legN = Math.max(latA, latB);
+    for (let k = 0; k < lons.length; k++) {
+      let x = lons[k];
+      if (x - lonA > 180) x -= 360;
+      else if (lonA - x > 180) x += 360;
+      legW = Math.min(legW, x);
+      legE = Math.max(legE, x);
+      legS = Math.min(legS, lats[k]);
+      legN = Math.max(legN, lats[k]);
+    }
+    const shapes = this.piecesIn({ west: wrapLon(legW - dLonB), east: wrapLon(legE + dLonB), south: legS - dLatB, north: legN + dLatB });
     for (let k = 0; k + 1 < lons.length; k++) {
       const x1 = lons[k];
       const y1 = lats[k];
@@ -859,7 +922,7 @@ export class LandMask implements LandTest {
       const maxX = Math.max(x1, x2);
       const minY = Math.min(y1, y2);
       const maxY = Math.max(y1, y2);
-      for (const s of this.shapes) {
+      for (const s of shapes) {
         if (s.maxLon < minX - dLonB || s.minLon > maxX + dLonB || s.maxLat < minY - dLatB || s.minLat > maxY + dLatB) continue;
         for (const ring of s.rings) {
           if (ring.maxLon < minX - dLonB || ring.minLon > maxX + dLonB || ring.maxLat < minY - dLatB || ring.minLat > maxY + dLatB)

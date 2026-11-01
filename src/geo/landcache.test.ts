@@ -7,7 +7,6 @@ import { pointInShape, readShapefilePolygons, ShapefileIndex, type ShapePolygon 
 import { LandMask } from './landmask';
 import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
 import { CoastTiles, COAST_TILE_DEG, coastTilesDir, coastTilesReady } from './coasttiles';
-import { rasterFromTiles } from './rawraster';
 
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
 function writeShp(file: string, polys: number[][][][]): void {
@@ -362,15 +361,16 @@ test('coastline tiles: the raster drawn from the bytes equals the one drawn from
   ] as const) {
     for (const edgeCells of [true, false]) {
       const decoded = LandMask.rasterStreamed(b, res, add => coast.forEach(b, add), { edgeCells });
-      const raw = rasterFromTiles(coast, b, res, { edgeCells });
+      const raw = LandMask.fromTiles(coast, b, res, { edgeCells });
       assert.deepEqual(raw.mask.raster, decoded.raster, `${JSON.stringify(b)} at ${res}, edge cells ${edgeCells}`);
       assert.equal(raw.mask.nx, decoded.nx);
+      assert.equal(raw.mask.hasPolygons, false, 'a raster-only mask');
     }
   }
   // An explicit size, as the water grid build asks for.
   const b = { west: 9.5, south: 49.5, east: 12.5, north: 52.5 };
   const decoded = LandMask.rasterStreamed(b, 0.01, add => coast.forEach(b, add), { edgeCells: false, nx: 310, ny: 305 });
-  const raw = rasterFromTiles(coast, b, 0.01, { edgeCells: false, nx: 310, ny: 305 });
+  const raw = LandMask.fromTiles(coast, b, 0.01, { edgeCells: false, nx: 310, ny: 305 });
   assert.deepEqual(raw.mask.raster, decoded.raster);
   assert.deepEqual([raw.mask.nx, raw.mask.ny], [310, 305]);
 });
@@ -393,7 +393,7 @@ test('coastline tiles: a piece with more crossing edges than the scratch holds d
   const b = { west: 10, south: 50, east: 10.5, north: 50.5 };
   for (const edgeCells of [true, false]) {
     const decoded = LandMask.rasterStreamed(b, 0.005, add => coast.forEach(b, add), { edgeCells });
-    const raw = rasterFromTiles(coast, b, 0.005, { edgeCells });
+    const raw = LandMask.fromTiles(coast, b, 0.005, { edgeCells });
     let differ = 0;
     for (let i = 0; i < decoded.raster.length; i++) if (raw.mask.raster[i] !== decoded.raster[i]) differ++;
     assert.equal(differ, 0, `cells differing, edge cells ${edgeCells}`);
@@ -412,9 +412,27 @@ test('coastline tiles: exact tests equal the whole records, on tile borders too'
     [{ west: 4.5, south: 43.5, east: 8.0, north: 46.5 }, 0.005],
   ] as const) {
     const whole = LandMask.fromPolygons(recordsIn(files, b), b, res);
+    // A route's mask: the raster drawn from the tiles' bytes, no pieces kept, the exact tests reading the tiles.
     const tiled = LandMask.fromCoastline(coast, b, { resolutionDeg: res, bufferDeg: 0 });
+    assert.equal(tiled.shapes.length, 0, 'no polygons kept');
+    assert.ok(tiled.tiles && tiled.hasPolygons, 'the tiles answer the exact tests');
+    assert.deepEqual(tiled.raster, whole.raster, 'the same raster');
     const w = b.east - b.west;
     const h = b.north - b.south;
+    // The band's finer patches, from the tiles and from the pieces: the same cells, with and without a buffer.
+    for (const [pm, tm] of [
+      [whole, tiled],
+      [whole.withBuffer(300), tiled.withBuffer(300)],
+    ] as const) {
+      const sub = { west: b.west + w * 0.3, south: b.south + h * 0.3, east: b.west + w * 0.55, north: b.south + h * 0.55 };
+      const pp = pm.refine(sub, res / 5);
+      const tp = tm.refine(sub, res / 5);
+      assert.ok(pp && tp, 'both drew a patch');
+      assert.deepEqual(tp!.bbox, pp!.bbox);
+      assert.deepEqual(tp!.raster, pp!.raster, `patch of ${JSON.stringify(b)}${pm.bufferM ? ' buffered' : ''}`);
+      assert.deepEqual(tm.refineBand(b, 400_000), pm.refineBand(b, 400_000));
+      for (let k = 0; k < tm.patches.length; k++) assert.deepEqual(tm.patches[k].raster, pm.patches[k].raster, `band patch ${k}`);
+    }
     // Random points, and points exactly on tile borders (columns and rows of the 0.5° grid).
     const pts: [number, number][] = [];
     for (let k = 0; k < 4000; k++) pts.push([b.west + rnd() * w, b.south + rnd() * h]);

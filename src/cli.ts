@@ -146,7 +146,7 @@ async function main(): Promise<void> {
     // The band along the leg at its own cell size inside the coarser world (LandMask.refineBand).
     const fine = band ? m.refineBand(band) : null;
     log(
-      `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°` +
+      `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.pieces} coastline pieces drawn, ${m.nx}x${m.ny} cells at ${r}°` +
         (fine ? `, the leg's band at ${fine.resolutionDeg}° in ${fine.patches} patch(es)` : '') +
         `, ${Date.now() - t1} ms`
     );

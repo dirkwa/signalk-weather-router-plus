@@ -26,7 +26,6 @@ import type { BBox } from './geodesy';
 import { bboxWidth } from './geodesy';
 import { LandMask } from './landmask';
 import type { CoastTiles } from './coasttiles';
-import { rasterFromTiles } from './rawraster';
 
 export interface LandLookup {
   isLand(lon: number, lat: number): boolean;
@@ -279,7 +278,7 @@ export class OnDemandLand implements OverlayLand {
     const t = Date.now();
     // Drawn from the bytes of the box's tiles, nothing decoded or cached: a whole-world view decoded kept hundreds of
     // MB in Signal K's process (rawraster.ts).
-    const { mask, pieces } = rasterFromTiles(this.coast, snapped, res);
+    const { mask, pieces } = LandMask.fromTiles(this.coast, snapped, res);
     this.lastBuildMs = Date.now() - t;
     this.builds++;
     this.log(
