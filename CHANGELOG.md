@@ -216,6 +216,27 @@ uses [Semantic Versioning](https://semver.org/).
   planned. It now leaves the screen when its route does (one still
   computing stays, so it can be cancelled), is marked out of date when the
   markers move, and comes back on load only for the plan on the page.
+  A comparison started and then changed under (a marker moved before its
+  first poll) is marked out of date from that first poll, by its request
+  against the plan (PR #91 review).
+- **The per-route limit controls say what the route will get.** Block /
+  Avoid for each limit showed "Block" while the routing settings had not
+  loaded, or had failed to load, though nothing was sent and the server
+  might avoid; and the remembered avoid strength was not sent while the
+  modes showed Block, so with a mode left to a server set to Avoid the
+  server's strength replaced the user's. The four controls (the two
+  modes, the avoid strength, comfort) now follow one rule, on the web page
+  and in the Freeboard panel: each is in one of three states. Unknown, the
+  settings not loaded: it says "Server setting" and sends nothing. Server,
+  the settings loaded and nothing chosen here: it says "Server setting
+  (Avoid)" (a slider sits at the server's value, its text "server setting
+  (1.5)") and sends nothing, so the route gets the setting as it is when
+  it runs. User, chosen here and remembered: it shows the value and sends
+  it, the strength whatever the modes show. A select goes back to the
+  server's through its first option, a slider through a "Use server
+  setting" link beside its value. The strength row hides only when both
+  limits are known to be Block. A save on the Defaults tab updates the
+  server state at once (PR #91 review, 2026-10-30).
 
 ### Added
 

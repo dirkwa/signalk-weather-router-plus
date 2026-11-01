@@ -1352,59 +1352,110 @@ function _initRouteChoices() {
     el.addEventListener('change', () => { prefs.set(key, el.value); });
   }
 }
-// Block / Avoid for each limit and the avoid strength: remembered per browser and Signal K user (rp-prefs.js); until
-// the user chooses, the plugin's routing settings. The strength shows only when a limit is set to avoid.
-function _initLimitModes() {
-  const modes = [['maxWindMode', 'routeVar:maxWindMode'], ['maxSwhMode', 'routeVar:maxSwhMode']];
-  const strength = /** @type {HTMLInputElement} */ (document.getElementById('limitAvoidStrength'));
-  if (!strength) return;
-  const sync = () => {
-    const shown = document.getElementById('limitAvoidStrengthValue');
-    if (shown) shown.textContent = strength.value;
-    const any = modes.some(([id]) => /** @type {HTMLSelectElement} */ (document.getElementById(id)).value === 'avoid');
-    document.getElementById('limitStrengthRow').hidden = !any;
-    document.getElementById('limitStrengthHint').hidden = !any;
-  };
-  for (const [id, key] of modes) {
-    const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
-    const saved = prefs.get(key);
-    if (saved === 'block' || saved === 'avoid') { el.value = saved; el.dataset.known = '1'; }
-    el.addEventListener('change', () => { el.dataset.known = '1'; prefs.set(key, el.value); sync(); });
+// The per-route limit controls: Block / Avoid for each limit, the avoid strength and comfort. One rule for the four
+// (the PR #91 review of 2026-10-30, built once): each is in one of three states, kept in data-state.
+//   unknown  nothing chosen here and the routing settings not loaded (or failed): shown as "Server setting", not sent;
+//   server   the routing settings loaded, nothing chosen here: shown as "Server setting (Avoid)" (a slider: at the
+//            server's value, its text "server setting (1.5)"), not sent, so the route gets the setting as it is when
+//            it runs;
+//   user     chosen here (or remembered per browser and Signal K user, rp-prefs.js): shown as the value, sent.
+// A select goes back to the server's through its first option, a slider through its "Use server setting" link; both
+// clear the remembered choice. The strength row hides only when both limits are known to be Block (user or server);
+// with a mode unknown the server may avoid, and a remembered strength applies, so the row stays.
+const _LIMIT_CONTROLS = [
+  { id: 'maxWindMode', key: 'routeVar:maxWindMode', field: 'max_wind_mode', kind: 'select' },
+  { id: 'maxSwhMode', key: 'routeVar:maxSwhMode', field: 'max_swh_mode', kind: 'select' },
+  { id: 'limitAvoidStrength', key: 'routeVar:limitAvoidStrength', field: 'limit_avoid_strength', kind: 'range' },
+  { id: 'comfortWeight', key: 'routeVar:comfortWeight', field: 'comfort_weight', kind: 'range' },
+];
+/** A value the control can hold: Block or Avoid, or a number not below zero. */
+function _limitValid(c, v) {
+  return c.kind === 'select' ? v === 'block' || v === 'avoid' : v !== null && v !== '' && Number.isFinite(+v) && +v >= 0;
+}
+/** The value a route gets from this control: the user's, else the server's, else null (unknown). */
+function _limitEffective(c) {
+  const el = document.getElementById(c.id);
+  if (!el) return null;
+  if (el.dataset.state === 'user') return el.dataset.value;
+  return el.dataset.state === 'server' ? el.dataset.server : null;
+}
+/** Draw a control from its state; the strength row from the two modes. */
+function _limitShow(c) {
+  const el = /** @type {HTMLSelectElement | HTMLInputElement} */ (document.getElementById(c.id));
+  if (!el) return;
+  const user = el.dataset.state === 'user';
+  const server = el.dataset.state !== 'unknown' ? el.dataset.server : undefined;
+  if (c.kind === 'select') {
+    const sel = /** @type {HTMLSelectElement} */ (el);
+    sel.options[0].textContent = server !== undefined ? 'Server setting (' + server.charAt(0).toUpperCase() + server.slice(1) + ')' : 'Server setting';
+    sel.value = user ? el.dataset.value : '';
+  } else {
+    if (user) el.value = el.dataset.value;
+    else if (server !== undefined) el.value = server;
+    const text = document.getElementById(c.id + 'Value');
+    if (text) text.textContent = user ? el.dataset.value : server !== undefined ? 'server setting (' + server + ')' : 'server setting';
+    const reset = document.getElementById(c.id + 'Reset');
+    if (reset) reset.hidden = !user;
   }
-  // Comfort, per route as the limits are: remembered, the routing setting until the user chooses.
-  const comfort = /** @type {HTMLInputElement} */ (document.getElementById('comfortWeight'));
-  // Until the user chooses or the routing setting has loaded, the slider's position is not what a route gets: no
-  // number is shown for it (PR #91 review), and none is sent (buildRoutePayload).
-  const showComfort = () => {
-    document.getElementById('comfortWeightValue').textContent = comfort.dataset.known ? comfort.value : 'server setting';
-  };
-  const savedC = prefs.get('routeVar:comfortWeight');
-  if (savedC && Number.isFinite(+savedC)) { comfort.value = savedC; comfort.dataset.known = '1'; }
-  comfort.addEventListener('input', () => { comfort.dataset.known = '1'; showComfort(); });
-  comfort.addEventListener('change', () => { comfort.dataset.known = '1'; showComfort(); prefs.set('routeVar:comfortWeight', comfort.value); });
-  showComfort();
-  const savedS = prefs.get('routeVar:limitAvoidStrength');
-  if (savedS && Number.isFinite(+savedS)) { strength.value = savedS; strength.dataset.known = '1'; }
-  strength.addEventListener('input', () => { strength.dataset.known = '1'; sync(); });
-  strength.addEventListener('change', () => { strength.dataset.known = '1'; prefs.set('routeVar:limitAvoidStrength', strength.value); });
-  sync();
+  const strengthHidden = ['maxWindMode', 'maxSwhMode'].every(id => _limitEffective(_LIMIT_CONTROLS.find(x => x.id === id)) === 'block');
+  document.getElementById('limitStrengthRow').hidden = strengthHidden;
+  document.getElementById('limitStrengthHint').hidden = strengthHidden;
+}
+/** The user's choice: kept, remembered, shown. */
+function _limitChoose(c, value) {
+  const el = document.getElementById(c.id);
+  el.dataset.state = 'user';
+  el.dataset.value = String(value);
+  _limitShow(c);
+}
+/** Back to the server's: the remembered choice cleared; server or unknown by whether the settings have loaded. */
+function _limitRelease(c) {
+  const el = document.getElementById(c.id);
+  el.dataset.state = el.dataset.server !== undefined ? 'server' : 'unknown';
+  delete el.dataset.value;
+  prefs.set(c.key, '');
+  _limitShow(c);
+}
+/** The routing settings' values (GET /api/settings values.routing, or the Defaults tab's save): the server state. */
+function _limitServerValues(routing) {
+  for (const c of _LIMIT_CONTROLS) {
+    const el = document.getElementById(c.id);
+    if (!el) continue;
+    const v = routing[c.id];
+    if (!_limitValid(c, v)) continue;
+    el.dataset.server = String(v);
+    if (el.dataset.state !== 'user') el.dataset.state = 'server';
+    _limitShow(c);
+  }
+}
+function _initLimitModes() {
+  if (!document.getElementById('limitAvoidStrength')) return;
+  for (const c of _LIMIT_CONTROLS) {
+    const el = document.getElementById(c.id);
+    el.dataset.state = 'unknown';
+    const saved = prefs.get(c.key);
+    if (_limitValid(c, saved)) { el.dataset.state = 'user'; el.dataset.value = String(saved); }
+    if (c.kind === 'select') {
+      el.addEventListener('change', () => {
+        const v = /** @type {HTMLSelectElement} */ (el).value;
+        if (v === '') { _limitRelease(c); return; }
+        _limitChoose(c, v);
+        prefs.set(c.key, v);
+      });
+    } else {
+      el.addEventListener('input', () => _limitChoose(c, /** @type {HTMLInputElement} */ (el).value));
+      el.addEventListener('change', () => { _limitChoose(c, /** @type {HTMLInputElement} */ (el).value); prefs.set(c.key, el.dataset.value); });
+      const reset = document.getElementById(c.id + 'Reset');
+      if (reset) reset.addEventListener('click', () => _limitRelease(c));
+    }
+  }
+  for (const c of _LIMIT_CONTROLS) _limitShow(c);
   authFetch(API + '/settings', { cache: 'no-store' }, null)
     .then(r => (r.ok ? r.json() : null))
-    .then(s => {
-      const r = (s && s.values && s.values.routing) || {};
-      for (const [id, key] of modes) {
-        const v = r[id];
-        const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
-        if (!prefs.get(key) && (v === 'block' || v === 'avoid')) { el.value = v; el.dataset.known = '1'; }
-      }
-      if (!prefs.get('routeVar:limitAvoidStrength') && Number.isFinite(r.limitAvoidStrength)) {
-        strength.value = String(r.limitAvoidStrength);
-        strength.dataset.known = '1';
-      }
-      if (!prefs.get('routeVar:comfortWeight') && Number.isFinite(r.comfortWeight)) { comfort.value = String(r.comfortWeight); comfort.dataset.known = '1'; showComfort(); }
-      sync();
-    })
-    .catch(() => {});
+    .then(s => { _limitServerValues((s && s.values && s.values.routing) || {}); })
+    .catch(() => { /* unknown stays unknown: shown as such, nothing sent */ });
+  // The Defaults tab saved new routing settings (rp-settings.js): the server state follows them.
+  window.addEventListener('rp:settings', (/** @type {CustomEvent} */ e) => { _limitServerValues((e.detail && e.detail.routing) || {}); });
 }
 // Smoothing applies to both routers (the owner's decision, 2026-10-08): a
 // shortcut replaces laid-out tacks only where the straight course can be
@@ -2321,22 +2372,14 @@ function buildRoutePayload(overrides) {
   const maxWindMs = _limitSI('maxWind'), maxSwhM = _limitSI('maxSwh');
   if (maxWindMs !== null) body.max_wind_ms = maxWindMs;
   if (maxSwhM !== null) body.max_swh_m = maxSwhM;
-  // Block / Avoid for each limit, and the avoid strength when one avoids: each only when the user chose it or the
-  // routing settings gave it; the controls' built-in starts (Block, 1) are not sent, so a request made before the
-  // settings load, or when they fail, keeps the server's own (PR #91 review).
-  for (const [id, field] of [['maxWindMode', 'max_wind_mode'], ['maxSwhMode', 'max_swh_mode']]) {
-    const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
-    if (el && el.value && el.dataset.known) body[field] = el.value;
-  }
-  // Only a value the user chose or the routing setting gave: the slider's built-in start is not sent (PR #91 review).
-  const comfortEl = /** @type {HTMLInputElement} */ (document.getElementById('comfortWeight'));
-  const comfort = parseFloat(comfortEl.value);
-  if (comfortEl.dataset.known && Number.isFinite(comfort) && comfort >= 0) body.comfort_weight = comfort;
-  const strengthEl = /** @type {HTMLInputElement} */ (document.getElementById('limitAvoidStrength'));
-  const avoiding = ['maxWindMode', 'maxSwhMode'].some(id => /** @type {HTMLSelectElement} */ (document.getElementById(id)).value === 'avoid');
-  if (avoiding && strengthEl.dataset.known) {
-    const v = parseFloat(strengthEl.value);
-    if (Number.isFinite(v) && v >= 0) body.limit_avoid_strength = v;
+  // Block / Avoid for each limit, the avoid strength and comfort: each sent when, and only when, the user chose it
+  // (_LIMIT_CONTROLS, state user); in the server and unknown states the request leaves it to the routing setting as
+  // it is when the route runs. The strength goes whatever the modes show: with a mode left to the server, which may
+  // avoid, the user's strength is the one that applies.
+  for (const c of _LIMIT_CONTROLS) {
+    const el = document.getElementById(c.id);
+    if (!el || el.dataset.state !== 'user') continue;
+    body[c.field] = c.kind === 'select' ? el.dataset.value : parseFloat(el.dataset.value);
   }
   if (overrides.departure !== undefined) body.departure = overrides.departure;
   else if (fromClockInput(depVal)) body.departure = fromClockInput(depVal).toISOString();
@@ -3798,8 +3841,9 @@ function _winPoll(id) {
     .then(w => {
       started();
       // Another window replacing the one on screen: the out-of-date note belonged to the old one (PR #91 review: it
-      // was cleared on Start, while the old rows were still shown).
-      if (!_win || _win.id !== w.id) _winStale = false;
+      // was cleared on Start, while the old rows were still shown). The new one is out of date from its first poll
+      // when the markers moved after it was started (PR #91 review, 2026-10-30): told by its request against the plan.
+      if (!_win || _win.id !== w.id) _winStale = !_winMatchesPlan(w);
       _win = w;
       _winRender();
       // After a cancel the departure computing ends a moment later: followed until it has.

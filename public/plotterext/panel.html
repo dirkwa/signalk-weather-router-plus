@@ -235,15 +235,17 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       <input id="maxSwh" type="number" step="0.5" min="0" placeholder="max waves" aria-label="Maximum wave height">
       <span id="maxSwhUnit" class="muted"></span>
     </div>
+    <!-- The four controls below share one rule with the web app's (../rp-plan.js _initLimitModes): unknown ("Server
+         setting", nothing sent), server ("Server setting (Avoid)", nothing sent) or user (the value, sent). -->
     <div class="row">
-      <label class="small">Wind <select id="maxWindMode" aria-label="Over the wind limit"><option value="block">Block</option><option value="avoid">Avoid</option></select></label>
-      <label class="small">Waves <select id="maxSwhMode" aria-label="Over the wave limit"><option value="block">Block</option><option value="avoid">Avoid</option></select></label>
-      <label class="small" id="limitStrengthRow" hidden>Avoid strength <input id="limitAvoidStrength" type="range" step="0.5" min="0" max="10" value="1" aria-label="Avoid strength"> <span id="limitAvoidStrengthValue"></span></label>
+      <label class="small">Wind <select id="maxWindMode" aria-label="Over the wind limit"><option value="">Server setting</option><option value="block">Block</option><option value="avoid">Avoid</option></select></label>
+      <label class="small">Waves <select id="maxSwhMode" aria-label="Over the wave limit"><option value="">Server setting</option><option value="block">Block</option><option value="avoid">Avoid</option></select></label>
+      <label class="small" id="limitStrengthRow" hidden>Avoid strength <input id="limitAvoidStrength" type="range" step="0.5" min="0" max="10" value="1" aria-label="Avoid strength"> <span id="limitAvoidStrengthValue"></span> <button type="button" class="link small" id="limitAvoidStrengthReset" hidden>Use server setting</button></label>
     </div>
     <div class="row">
-      <label class="small">Comfort <input id="comfortWeight" type="range" step="0.1" min="0" max="3" value="1" aria-label="Comfort"> <span id="comfortWeightValue"></span></label>
+      <label class="small">Comfort <input id="comfortWeight" type="range" step="0.1" min="0" max="3" value="1" aria-label="Comfort"> <span id="comfortWeightValue"></span> <button type="button" class="link small" id="comfortWeightReset" hidden>Use server setting</button></label>
     </div>
-    <span class="muted small">Comfort: how much the route avoids rough water as the boat meets it; higher gives up more time for a smoother passage, 0 turns it off. Block: legs with more wind or higher waves than this are not allowed. Avoid: the route tries to stay under the limit, and warns where it goes over; the higher the avoid strength, the further out of its way it will sail to avoid it (0: it never detours, it only warns). Empty = no limit.</span>
+    <span class="muted small">Comfort: how much the route avoids rough water as the boat meets it; higher gives up more time for a smoother passage, 0 turns it off. Block: legs with more wind or higher waves than this are not allowed. Avoid: the route tries to stay under the limit, and warns where it goes over; the higher the avoid strength, the further out of its way it will sail to avoid it (0: it never detours, it only warns). Server setting: the plugin's routing setting, as set in the web app's Defaults tab. Empty = no limit.</span>
   </div>
   <div class="row">
     <button id="cancel" type="button" hidden>Cancel</button>
@@ -1231,17 +1233,14 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (mw !== null) body.max_wind_ms = mw;
     var mh = limitSI('maxSwh', lengthUnit());
     if (mh !== null) body.max_swh_m = mh;
-    // Only a value the user chose or the routing setting gave: the slider's built-in start is not sent (PR #91 review).
-    var comfort = num('comfortWeight');
-    if ($('comfortWeight').dataset.known && comfort !== null && comfort >= 0) body.comfort_weight = comfort;
-    // Each only when the user chose it or the routing settings gave it: the controls' built-in starts (Block, 1) are
-    // not sent, so a request made before the settings load, or when they fail, keeps the server's own (PR #91 review).
-    if ($('maxWindMode').dataset.known) body.max_wind_mode = $('maxWindMode').value;
-    if ($('maxSwhMode').dataset.known) body.max_swh_mode = $('maxSwhMode').value;
-    if (($('maxWindMode').value === 'avoid' || $('maxSwhMode').value === 'avoid') && $('limitAvoidStrength').dataset.known) {
-      var strength = num('limitAvoidStrength');
-      if (strength !== null && strength >= 0) body.limit_avoid_strength = strength;
-    }
+    // Block / Avoid for each limit, the avoid strength and comfort: each sent when, and only when, the user chose it
+    // (LIMIT_CONTROLS, state user); otherwise the request leaves it to the routing setting as it is when the route
+    // runs. The strength goes whatever the modes show: a mode left to the server may avoid.
+    LIMIT_CONTROLS.forEach(function (c) {
+      var el = $(c.id);
+      if (el.dataset.state !== 'user') return;
+      body[c.field] = c.kind === 'select' ? el.dataset.value : parseFloat(el.dataset.value);
+    });
     return body;
   }
 
@@ -1253,52 +1252,93 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function limitKey(id) { return 'routeVar:' + id + ':si'; }
   function oldLimitKey(id) { return 'wrp-plotterext-' + id + '-ms'; }
   var limitDefaultsMs = { maxWind: null, maxSwh: null };
-  // Block / Avoid per limit and the avoid strength, kept with the user's choices under the web app's keys; until the
-  // user chooses, the plugin's routing settings. The strength shows only when a limit avoids.
-  var limitModeDefaults = { maxWindMode: 'block', maxSwhMode: 'block', limitAvoidStrength: 1, comfortWeight: 1 };
-  function syncLimitModes() {
-    $('limitStrengthRow').hidden = $('maxWindMode').value !== 'avoid' && $('maxSwhMode').value !== 'avoid';
-    $('limitAvoidStrengthValue').textContent = $('limitAvoidStrength').value;
+  // Block / Avoid per limit, the avoid strength and comfort, kept with the user's choices under the web app's keys.
+  // One rule for the four, the web app's (../rp-plan.js _initLimitModes; the PR #91 review of 2026-10-30): each is in
+  // one of three states, kept in data-state. unknown: nothing chosen here and the routing settings not loaded (or
+  // failed), shown as "Server setting", not sent. server: the settings loaded, nothing chosen here, shown as "Server
+  // setting (Avoid)" (a slider at the server's value, its text "server setting (1.5)"), not sent, so the route gets
+  // the setting as it is when it runs. user: chosen here or remembered, shown as the value, sent. A select goes back
+  // to the server's through its first option, a slider through its "Use server setting" link; both clear the
+  // remembered choice. The strength row hides only when both limits are known to be Block.
+  var LIMIT_CONTROLS = [
+    { id: 'maxWindMode', key: 'routeVar:maxWindMode', oldKey: 'wrp-plotterext-maxWindMode', field: 'max_wind_mode', kind: 'select' },
+    { id: 'maxSwhMode', key: 'routeVar:maxSwhMode', oldKey: 'wrp-plotterext-maxSwhMode', field: 'max_swh_mode', kind: 'select' },
+    { id: 'limitAvoidStrength', key: 'routeVar:limitAvoidStrength', oldKey: 'wrp-plotterext-limitAvoidStrength', field: 'limit_avoid_strength', kind: 'range' },
+    { id: 'comfortWeight', key: 'routeVar:comfortWeight', oldKey: 'wrp-plotterext-comfortWeight', field: 'comfort_weight', kind: 'range' },
+  ];
+  function limitValid(c, v) {
+    return c.kind === 'select' ? v === 'block' || v === 'avoid' : v !== null && v !== '' && isFinite(+v) && +v >= 0;
   }
+  function limitEffective(c) {
+    var el = $(c.id);
+    if (el.dataset.state === 'user') return el.dataset.value;
+    return el.dataset.state === 'server' ? el.dataset.server : null;
+  }
+  function limitShow(c) {
+    var el = $(c.id);
+    var user = el.dataset.state === 'user';
+    var server = el.dataset.state !== 'unknown' ? el.dataset.server : undefined;
+    if (c.kind === 'select') {
+      el.options[0].textContent = server !== undefined ? 'Server setting (' + server.charAt(0).toUpperCase() + server.slice(1) + ')' : 'Server setting';
+      el.value = user ? el.dataset.value : '';
+    } else {
+      if (user) el.value = el.dataset.value;
+      else if (server !== undefined) el.value = server;
+      $(c.id + 'Value').textContent = user ? el.dataset.value : server !== undefined ? 'server setting (' + server + ')' : 'server setting';
+      $(c.id + 'Reset').hidden = !user;
+    }
+    $('limitStrengthRow').hidden = ['maxWindMode', 'maxSwhMode'].every(function (id) {
+      return limitEffective(LIMIT_CONTROLS.filter(function (x) { return x.id === id; })[0]) === 'block';
+    });
+  }
+  function limitChoose(c, value) {
+    var el = $(c.id);
+    el.dataset.state = 'user';
+    el.dataset.value = String(value);
+    limitShow(c);
+  }
+  function limitRelease(c) {
+    var el = $(c.id);
+    el.dataset.state = el.dataset.server !== undefined ? 'server' : 'unknown';
+    delete el.dataset.value;
+    setChoice(c.key, c.oldKey, '');
+    limitShow(c);
+  }
+  // The remembered choices (the store, or the panel's old keys): the user state; the rest unknown until the settings load.
   function showLimitModes() {
-    ['maxWindMode', 'maxSwhMode'].forEach(function (id) {
-      var v = choice('routeVar:' + id, 'wrp-plotterext-' + id);
-      var saved = v === 'block' || v === 'avoid';
-      $(id).value = saved ? v : limitModeDefaults[id];
-      if (saved || limitModeDefaults.modesKnown) $(id).dataset.known = '1';
+    LIMIT_CONTROLS.forEach(function (c) {
+      var el = $(c.id);
+      if (!el.dataset.state) el.dataset.state = 'unknown';
+      var saved = choice(c.key, c.oldKey);
+      if (limitValid(c, saved)) { el.dataset.state = 'user'; el.dataset.value = String(saved); }
+      limitShow(c);
     });
-    var cw = choice('routeVar:comfortWeight', 'wrp-plotterext-comfortWeight');
-    var savedCw = cw !== null && cw !== '' && isFinite(+cw);
-    $('comfortWeight').value = savedCw ? cw : String(limitModeDefaults.comfortWeight);
-    if (savedCw || limitModeDefaults.comfortKnown) $('comfortWeight').dataset.known = '1';
-    showComfort();
-    var s = choice('routeVar:limitAvoidStrength', 'wrp-plotterext-limitAvoidStrength');
-    var savedS = s !== null && s !== '' && isFinite(+s);
-    $('limitAvoidStrength').value = savedS ? s : String(limitModeDefaults.limitAvoidStrength);
-    if (savedS || limitModeDefaults.modesKnown) $('limitAvoidStrength').dataset.known = '1';
-    syncLimitModes();
   }
-  ['maxWindMode', 'maxSwhMode'].forEach(function (id) {
-    $(id).addEventListener('change', function () {
-      this.dataset.known = '1';
-      setChoice('routeVar:' + id, 'wrp-plotterext-' + id, this.value);
-      syncLimitModes();
+  // The routing settings' values: the server state of every control the user has not chosen.
+  function limitServerValues(r) {
+    LIMIT_CONTROLS.forEach(function (c) {
+      var el = $(c.id), v = r[c.id];
+      if (!limitValid(c, v)) return;
+      el.dataset.server = String(v);
+      if (el.dataset.state !== 'user') el.dataset.state = 'server';
+      limitShow(c);
     });
-  });
-  $('limitAvoidStrength').addEventListener('input', function () { this.dataset.known = '1'; syncLimitModes(); });
-  // Until the user chooses or the routing setting has loaded, the slider's position is not what a route gets: no
-  // number is shown for it (PR #91 review), and none is sent (requestBody).
-  function showComfort() {
-    var el = $('comfortWeight');
-    $('comfortWeightValue').textContent = el.dataset.known ? el.value : 'server setting';
   }
-  $('comfortWeight').addEventListener('input', function () { this.dataset.known = '1'; showComfort(); });
-  $('comfortWeight').addEventListener('change', function () {
-    this.dataset.known = '1';
-    setChoice('routeVar:comfortWeight', 'wrp-plotterext-comfortWeight', this.value);
-  });
-  $('limitAvoidStrength').addEventListener('change', function () {
-    setChoice('routeVar:limitAvoidStrength', 'wrp-plotterext-limitAvoidStrength', this.value);
+  LIMIT_CONTROLS.forEach(function (c) {
+    var el = $(c.id);
+    el.dataset.state = 'unknown';
+    if (c.kind === 'select') {
+      el.addEventListener('change', function () {
+        if (this.value === '') { limitRelease(c); return; }
+        limitChoose(c, this.value);
+        setChoice(c.key, c.oldKey, this.value);
+      });
+    } else {
+      el.addEventListener('input', function () { limitChoose(c, this.value); });
+      el.addEventListener('change', function () { limitChoose(c, this.value); setChoice(c.key, c.oldKey, this.dataset.value); });
+      $(c.id + 'Reset').addEventListener('click', function () { limitRelease(c); });
+    }
+    limitShow(c);
   });
   function showLimits() {
     [['maxWind', speedUnit()], ['maxSwh', lengthUnit()]].forEach(function (pair) {
@@ -1348,16 +1388,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (isFinite(r.sailThreshold)) sailThreshDefaultMs = r.sailThreshold;
       if (r.maxWind !== null && isFinite(r.maxWind)) limitDefaultsMs.maxWind = r.maxWind;
       if (r.maxSwh !== null && isFinite(r.maxSwh)) limitDefaultsMs.maxSwh = r.maxSwh;
-      ['maxWindMode', 'maxSwhMode'].forEach(function (id) { if (r[id] === 'block' || r[id] === 'avoid') limitModeDefaults[id] = r[id]; });
-      limitModeDefaults.modesKnown = true;
-      if (isFinite(r.limitAvoidStrength)) limitModeDefaults.limitAvoidStrength = r.limitAvoidStrength;
-      if (isFinite(r.comfortWeight)) {
-        limitModeDefaults.comfortWeight = r.comfortWeight;
-        limitModeDefaults.comfortKnown = true;
-      }
       showSailThresh();
       showLimits();
       showLimitModes();
+      limitServerValues(r);
     }).catch(function () { showSailThresh(); showLimits(); showLimitModes(); });
   }
   $('mode').addEventListener('change', showSailThresh);
