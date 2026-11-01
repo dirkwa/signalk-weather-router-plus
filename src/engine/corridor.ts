@@ -781,6 +781,11 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const stats = { astarMs: 0, expanded: 0, windowCells: 0, reroutes: 0, refines: 0, blockedCells: 0, verifyMs: 0 };
   let land: LandMask | null = null;
   let landBox: BBox | null = null;
+  // The band the mask was asked to draw finely (the corridor's box when it was built): a re-route whose corridor
+  // leaves it needs the mask again even when its world still fits, or the new path runs on the coarse world raster.
+  // A re-routed path is longer, so its world is wider and the mask is rebuilt anyway, except where the world is
+  // already at its 120° × 90° limit: there only this test redraws the band (PR #91 review, 2026-11-01).
+  let bandBox: BBox | null = null;
   const fan = opts.fanHalfDeg ?? fanHalfDeg();
   let path: GridNode[];
   let segStart: number[];
@@ -820,9 +825,10 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
       );
     }
     const box = worldBox(near, gridPathLengthM(grid, path), fan, CORRIDOR_MARGIN_DEG);
-    if (!land || !landBox || !bboxInside(box, landBox)) {
+    if (!land || !landBox || !bandBox || !bboxInside(box, landBox) || !bboxInside(near, bandBox)) {
       land = opts.landFor(box, near);
       landBox = box;
+      bandBox = near;
       if (land.hasPolygons) {
         chain.forEach(([lon, lat], i) => {
           if (land!.isLandExact(lon, lat)) {

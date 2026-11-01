@@ -71,6 +71,14 @@ uses [Semantic Versioning](https://semver.org/).
   mask is compared against the polygon-built one in the tests, patches and
   buffer included); less memory, and an exact test no longer scans every
   polygon of the world (PR #91 review; docs/plans/land-mask-from-tiles.md).
+- **A re-routed corridor gets its fine band too.** When the route raster
+  closed a passage and the corridor was re-routed round it, the land mask
+  was kept whenever the new corridor's world still fitted the old one, with
+  the fine band drawn for the first path. A longer path widens the world,
+  so this could only happen where the world was already at its 120° × 90°
+  limit; there the new path ran on the coarse world raster. The mask is
+  asked for again whenever the new corridor's box leaves the band drawn
+  (PR #91 review).
 - **The world's longitude margin holds at its poleward edge.** The sweep's
   reach was turned into degrees of longitude at the box's middle latitude,
   so towards the poleward end of a long high-latitude leg the same metres
