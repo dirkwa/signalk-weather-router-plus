@@ -33,6 +33,7 @@ import { describePassage } from '../geo/straits';
 import type { WaterGrid } from '../geo/watergrid';
 import { gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
 import { CorridorError, GridAstarError } from './errors';
+import { fanHalfDeg } from './search/types';
 import type { ProgressFn } from './progress';
 import { distanceTransformCells } from './astar';
 import { MinHeap } from './heap';
@@ -53,8 +54,66 @@ const BAND = 2;
 const MAX_REROUTES = 12;
 /** Maximum local refinements per corridor. */
 const MAX_REFINES = 40;
-/** Degrees added around the corridor for the route raster. */
+/**
+ * Degrees added around the corridor for the route raster, at least. The
+ * raster's box is the search's world (outside it every point is land,
+ * geo/landmask.ts), so it is widened to the heading sweep's reach over the
+ * leg (worldBox) wherever that is more: a world of only the corridor plus
+ * this margin walled the search off from a detour round rough water
+ * (measured on brain 2026-10-31: the front hugged the box's west edge at
+ * 55.7 W for 35 stages while the water under the wave limit lay at 57.7 W).
+ */
 export const CORRIDOR_MARGIN_DEG = 1.0;
+/** The route raster's box may be at most this wide and this tall (its cell budget sets the cell size). */
+export const WORLD_MAX_WIDTH_DEG = 120;
+export const WORLD_MAX_HEIGHT_DEG = 90;
+
+/**
+ * How far off the corridor the search can get over a leg, metres: the
+ * heading sweep is measured from the skeleton's direction at every stage, so
+ * across the whole leg a branch can drift sideways at most the leg's length
+ * times the sine of the sweep's half angle (a 90° or wider fan: the whole
+ * length).
+ */
+export function searchReachM(lengthM: number, fanHalfDeg: number): number {
+  return lengthM * Math.sin(Math.min(90, Math.max(0, fanHalfDeg)) * DEG);
+}
+
+/**
+ * The search's world: `base` (the corridor's or the leg ends' box, carrying
+ * `baseMarginDeg` of margin already) widened on every side to the sweep's
+ * reach over the leg, never less than CORRIDOR_MARGIN_DEG, and never wider
+ * or taller than the raster's box limits (the margin shrinks to fit, so a
+ * long leg's world is the biggest raster the budget can hold). A short leg,
+ * whose reach is under the margin, keeps today's box exactly: the coastal
+ * raster stays as fine as it is. The reach in degrees of longitude is taken
+ * at the poleward edge of the box the reach can fill, where a degree is
+ * shortest, so the margin holds along the whole edge (until 2026-11-01 it was
+ * taken at the base's middle latitude, and at the poleward end of a
+ * high-latitude leg the same metres spanned more degrees than the margin;
+ * PR #91 review).
+ */
+export function worldBox(base: BBox, lengthM: number, fanHalfDeg: number, baseMarginDeg = 0): BBox {
+  const reachM = searchReachM(lengthM, fanHalfDeg);
+  const latDeg = reachM / M_PER_DEG;
+  const poleLat = Math.min(90, Math.max(Math.abs(base.south - latDeg), Math.abs(base.north + latDeg)));
+  const lonDeg = latDeg / Math.max(0.05, Math.cos(poleLat * DEG));
+  const w = lonOffset(base.east, base.west) || (base.east === base.west ? 0 : 360);
+  const h = base.north - base.south;
+  let mLon = Math.max(CORRIDOR_MARGIN_DEG, lonDeg) - baseMarginDeg;
+  let mLat = Math.max(CORRIDOR_MARGIN_DEG, latDeg) - baseMarginDeg;
+  // Kept within the raster's limits where the base itself fits them (a base that does not is the caller's error).
+  mLon = Math.max(0, Math.min(mLon, (WORLD_MAX_WIDTH_DEG - w) / 2));
+  mLat = Math.max(0, Math.min(mLat, (WORLD_MAX_HEIGHT_DEG - h) / 2));
+  if (w + 2 * mLon >= 360)
+    return { west: -180, east: 180, south: Math.max(-90, base.south - mLat), north: Math.min(90, base.north + mLat) };
+  return {
+    west: wrapLon(base.west - mLon),
+    east: wrapLon(base.east + mLon),
+    south: Math.max(-90, base.south - mLat),
+    north: Math.min(90, base.north + mLat),
+  };
+}
 /** Stage step may be at most this many passage widths. */
 export const STEP_PER_WIDTH = 4;
 /** …but never below this, metres. */
@@ -95,8 +154,12 @@ export interface Corridor {
   shoreM: Float64Array;
   /** Skeleton length, metres. */
   lengthM: number;
-  /** Route raster box. */
+  /** Route raster box: the search's world (worldBox). */
   bbox: BBox;
+  /** The band along the corridor (its own box plus CORRIDOR_MARGIN_DEG), drawn at the band's own cell size inside the world. */
+  band: BBox;
+  /** The heading sweep's reach over the leg, metres (searchReachM), that sized the box. */
+  reachM: number;
   /** Route raster (with any local patches). */
   land: LandMask;
   /** Automatic vias, in route order, with the chain segment they belong to. */
@@ -115,10 +178,15 @@ export interface Corridor {
 export { CorridorError };
 
 export interface CorridorOptions {
-  /** Route raster for a box (cached by the caller). Must carry polygons (for refine). */
-  landFor: (bbox: BBox) => LandMask;
+  /**
+   * Route raster for a box (cached by the caller). Must carry polygons (for refine). `band`: the corridor's own box
+   * inside the world, to be drawn at the cell size it would get alone (LandMask.refineBand) when the world is coarser.
+   */
+  landFor: (bbox: BBox, band?: BBox) => LandMask;
   /** Stages the propagator will use (for the via width threshold). */
   stages: number;
+  /** The propagator's heading sweep half angle, degrees (search/types.ts fanHalfDeg); sizes the world (worldBox). */
+  fanHalfDeg?: number;
   onProgress?: ProgressFn;
   shouldCancel?: () => boolean;
   /** Largest A* window, cells (7 bytes each). */
@@ -532,15 +600,21 @@ export function verifyCorridor(
 // Width profile
 
 /**
- * Across-track passage width at each point, metres: along the line
- * through the point perpendicular to the skeleton (sampled on the route
- * raster out to `capM` each side), the longest run of water that comes
- * within `nearM` of the point. An islet on the skeleton therefore does not
- * read as a narrow passage (the water beside it is the passage), while a
- * strait reads as its width. Infinity when that run reaches the cap on
- * both sides.
+ * Across-track passage width at each point, metres: the water the point
+ * sits in, along the line through the point perpendicular to the skeleton
+ * (sampled on the route raster out to `capM` each side), from the land on
+ * one side to the land on the other. Infinity when it reaches the cap both
+ * ways; 0 at a point on land. Until 2026-11-01 it was the longest run of
+ * water within 2.5 km of the point, which let a channel behind a barrier
+ * thinner than that read as the sea beyond it (measured: a 1 km channel
+ * behind 200 m to 1 km of barrier read 28–29 km; the Lauwersoog inlet and
+ * the Halifax approach read 28 km where the water was 2–4 km;
+ * docs/plans/width-profile-barriers.md). A skeleton point on land (a water
+ * grid cell's centre on an islet or a bank) reads 0 and is thereby a narrow
+ * stretch: the corridor refines and re-traces it on the raster into the
+ * water (planCorridor), where the width is then that water's.
  */
-export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[], capM = WIDTH_RAY_CAP_M, nearM = 2500): Float64Array {
+export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[], capM = WIDTH_RAY_CAP_M): Float64Array {
   const out = new Float64Array(pts.length);
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
@@ -554,30 +628,31 @@ export function widthProfile(land: LandMask, pts: { lon: number; lat: number }[]
     const sb = Math.sin(perp);
     const cb = Math.cos(perp);
     const n = Math.ceil(capM / stepM);
-    let runStart = -Infinity; // offset where the current water run began (-Infinity: open from the cap)
-    let best = 0;
-    let bestOpen = false;
-    for (let k = -n; k <= n + 1; k++) {
-      const d = k * stepM;
-      const isLand = k <= n && land.isLand(wrapLon(p.lon + (d * sb) / (M_PER_DEG * cosLat)), p.lat + (d * cb) / M_PER_DEG);
-      if (k <= n && !isLand) {
-        if (runStart === Infinity) runStart = d;
-        continue;
-      }
-      // Run [runStart, d) ended (land at d, or the cap).
-      if (runStart !== Infinity) {
-        const lo = runStart === -Infinity ? -capM : runStart;
-        const hi = k > n ? capM : d;
-        if (lo <= nearM && hi >= -nearM) {
-          const len = hi - lo;
-          const open = runStart === -Infinity && k > n;
-          if (open) bestOpen = true;
-          else if (len > best) best = len;
-        }
-      }
-      runStart = Infinity; // inside land
+    const isLand = (d: number): boolean => land.isLand(wrapLon(p.lon + (d * sb) / (M_PER_DEG * cosLat)), p.lat + (d * cb) / M_PER_DEG);
+    if (isLand(0)) {
+      out[i] = 0;
+      continue;
     }
-    out[i] = bestOpen ? Infinity : best > 0 ? best : stepM;
+    // Outward each way to the first land sample, or the cap.
+    let hi = capM;
+    let hiOpen = true;
+    for (let k = 1; k <= n; k++) {
+      if (isLand(k * stepM)) {
+        hi = k * stepM;
+        hiOpen = false;
+        break;
+      }
+    }
+    let lo = -capM;
+    let loOpen = true;
+    for (let k = 1; k <= n; k++) {
+      if (isLand(-k * stepM)) {
+        lo = -k * stepM;
+        loOpen = false;
+        break;
+      }
+    }
+    out[i] = loOpen && hiOpen ? Infinity : hi - lo;
   }
   return out;
 }
@@ -632,6 +707,17 @@ export function shoreProfile(land: LandMask, pts: { lon: number; lat: number }[]
 
 // ---------------------------------------------------------------------
 // Planner
+
+/** Length of a grid path along its cell centres, metres. */
+function gridPathLengthM(grid: WaterGrid, path: GridNode[]): number {
+  let m = 0;
+  for (let i = 1; i < path.length; i++) {
+    const [aLon, aLat] = grid.cellCentre(path[i - 1].r, path[i - 1].c);
+    const [bLon, bLat] = grid.cellCentre(path[i].r, path[i].c);
+    m += haversineDistanceM(aLon, aLat, bLon, bLat);
+  }
+  return m;
+}
 
 function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], marginDeg: number): BBox {
   let cLo = Infinity;
@@ -702,6 +788,12 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const stats = { astarMs: 0, expanded: 0, windowCells: 0, reroutes: 0, refines: 0, blockedCells: 0, verifyMs: 0 };
   let land: LandMask | null = null;
   let landBox: BBox | null = null;
+  // The band the mask was asked to draw finely (the corridor's box when it was built): a re-route whose corridor
+  // leaves it needs the mask again even when its world still fits, or the new path runs on the coarse world raster.
+  // A re-routed path is longer, so its world is wider and the mask is rebuilt anyway, except where the world is
+  // already at its 120° × 90° limit: there only this test redraws the band (PR #91 review, 2026-11-01).
+  let bandBox: BBox | null = null;
+  const fan = opts.fanHalfDeg ?? fanHalfDeg();
   let path: GridNode[];
   let segStart: number[];
   for (let attempt = 0; ; attempt++) {
@@ -730,17 +822,20 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
       }
     }
     stats.astarMs += Date.now() - t0;
-    // 2. Route raster over the corridor.
-    const box = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
-    const w = lonOffset(box.east, box.west) || 360;
-    if (w > 120 || box.north - box.south > 90) {
+    // 2. Route raster over the corridor: the search's world, the corridor's
+    // box widened to the heading sweep's reach over the leg (worldBox).
+    const near = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
+    const w = lonOffset(near.east, near.west) || 360;
+    if (w > WORLD_MAX_WIDTH_DEG || near.north - near.south > WORLD_MAX_HEIGHT_DEG) {
       throw new CorridorError(
-        `the corridor's bounding box (${w.toFixed(0)}° × ${(box.north - box.south).toFixed(0)}°) is too large (max 120° × 90°); add intermediate waypoints`
+        `the corridor's bounding box (${w.toFixed(0)}° × ${(near.north - near.south).toFixed(0)}°) is too large (max ${WORLD_MAX_WIDTH_DEG}° × ${WORLD_MAX_HEIGHT_DEG}°); add intermediate waypoints`
       );
     }
-    if (!land || !landBox || !bboxInside(box, landBox)) {
-      land = opts.landFor(box);
+    const box = worldBox(near, gridPathLengthM(grid, path), fan, CORRIDOR_MARGIN_DEG);
+    if (!land || !landBox || !bandBox || !bboxInside(box, landBox) || !bboxInside(near, bandBox)) {
+      land = opts.landFor(box, near);
       landBox = box;
+      bandBox = near;
       if (land.hasPolygons) {
         chain.forEach(([lon, lat], i) => {
           if (land!.isLandExact(lon, lat)) {
@@ -812,6 +907,9 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     );
   }
   if (!land || !landBox) throw new CorridorError('internal: no route raster');
+  const reachM = searchReachM(gridPathLengthM(grid, path), fan);
+  // The band along the final path (the box the raster was asked to draw finely), for the leg's progress line.
+  const band = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
 
   // 4. Skeleton: each leg's grid path smoothed (line of sight on the grid),
   // with the exact route points at the leg ends, densified.
@@ -861,7 +959,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const stepM = lengthM / Math.max(1, opts.stages);
   const autoVias = findAutoVias(grid, path, segStart, chain, stepM, land);
   const shoreM = shoreProfile(land, skeleton);
-  return { skeleton, widthM, shoreM, lengthM, bbox: landBox, land, autoVias, stats };
+  return { skeleton, widthM, shoreM, lengthM, bbox: landBox, band, reachM, land, autoVias, stats };
 }
 
 /**

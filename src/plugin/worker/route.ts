@@ -10,6 +10,7 @@ import { ACTIVE_POLAR_TOKEN, managedDiagram, type ManagedPolar } from '../manage
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
+import type { LegArrival } from '../../engine/legsim';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { boundaryFile, coarseFile, coarseRulesOf, joinsFile, markCoarseUsed, withBuildLock } from '../meshcoarse';
@@ -174,7 +175,8 @@ function meshLegRunner(
 ): MeshLegRunner | undefined {
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
-  const useForecast = !request.no_forecast && request.mode !== 'motor';
+  // A motor route reads the forecast too: its speed does not depend on the wind, but its limits and its comfort do.
+  const useForecast = !request.no_forecast;
   const roughCut = (m: OpenMesh, rules: MeshRules, tag: string, progress: MeshLegArgs['progress'], signal: AbortSignal) =>
     ensureRoughCut(st, m, rules, tag, progress, signal, stores);
   return {
@@ -313,6 +315,7 @@ function meshLegRunner(
           bridgeWaitS: a.bridgeWaitS,
           boundaryFile: boundaryFile(map),
           ...(a.reach ? { aims: a.reach.aims } : {}),
+          arriving: a.arriving ?? null,
           forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
           regional:
             useForecast && request.wind_model !== 'ecmwf'
@@ -725,8 +728,10 @@ export async function route(
       }
     }
     const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
-    const useForecast = !request.no_forecast && request.mode !== 'motor';
-    if (request.mode !== 'motor' && request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
+    // A motor route reads the forecast too (until 2026-10-30 it did not, so its wind and wave limits and its comfort
+    // weight judged a calm sea and never acted): the speed under power is the same in any wind, the limits are not.
+    const useForecast = !request.no_forecast;
+    if (request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
     let wind: ForecastStore | null = null;
     let cycleLabel: string | undefined;
     // Regional wind (signalk-grib-downloader runs decoded by the data
@@ -870,9 +875,9 @@ export async function route(
       st.send({ type: 'forecast-memory', memory: { ...st.forecastMemory } });
     };
 
-    const legOne = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
+    const legOne = async (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> => {
       try {
-        return await legRoute(plan, legStart, legDeparture);
+        return await legRoute(plan, legStart, legDeparture, arriving);
       } catch (err) {
         if (multi && err instanceof Error && !(err instanceof RouteCancelled) && !shouldCancel())
           err.message = `${legLabel(plan)}: ${err.message}`;
@@ -892,8 +897,21 @@ export async function route(
       drawbridges: request.drawbridges ?? cfg.routing.drawbridges,
       bridgeWaitS: cfg.routing.bridgeWaitS,
       allowCanals: cfg.routing.allowCanals,
-      landFor: b =>
-        landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles).withBuffer(cfg.routing.landBufferM).withAvoid(avoid),
+      landFor: (b, band) => {
+        const m = landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles).withBuffer(cfg.routing.landBufferM);
+        // The band along the route at its own cell size inside the coarser world (LandMask.refineBand): on the
+        // buffered mask, so the patches keep the buffer and are not lost with the unbuffered cached one.
+        if (band) {
+          const t = Date.now();
+          const r = m.refineBand(band, cfg.routing.landRasterMaxCells);
+          if (r)
+            st.log(
+              'info',
+              `land mask: the leg's band drawn at ${r.resolutionDeg}° in ${r.patches} patch(es) inside the ${m.resolutionDeg}° search area, ${Date.now() - t} ms`
+            );
+        }
+        return m.withAvoid(avoid);
+      },
       landBufferM: cfg.routing.landBufferM,
       stages,
       propagator: {
@@ -909,6 +927,9 @@ export async function route(
         simStepM: cfg.routing.simStepM,
         maxWindMs: request.max_wind_ms ?? cfg.routing.maxWindMs ?? undefined,
         maxSwhM: request.max_swh_m ?? cfg.routing.maxSwhM ?? undefined,
+        maxWindMode: request.max_wind_mode ?? cfg.routing.maxWindMode,
+        maxSwhMode: request.max_swh_mode ?? cfg.routing.maxSwhMode,
+        limitAvoidStrength: request.limit_avoid_strength ?? cfg.routing.limitAvoidStrength,
         comfortWeight: request.comfort_weight ?? cfg.routing.comfortWeight,
         tackPenaltyS: request.tack_penalty ?? cfg.routing.tackPenaltyS,
       },
@@ -930,12 +951,12 @@ export async function route(
       onFrontier: (leg, front) => st.send({ type: 'frontier', id, leg, ...compactFront(front) }),
       log: m => st.log('info', `job ${id}: ${m}`),
     };
-    const legRoute = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
-      runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
+    const legRoute = (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> =>
+      runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture, arriving);
 
     // Repair detours (finalDepthCheck): the blocked segment routed again with the same leg pipeline, sail
     // threshold 0, so the detour sails and motors only where sailing cannot move the boat (the owner's decision,
-    // 2026-10-15).
+    // 2026-10-15). The boat arrives at the detour's start as the route's waypoint says (its course and mode).
     const detourPipeline: LegPipelineInputs = { ...pipeline, sim: { ...pipeline.sim, sailThreshMs: 0 } };
     let detourCounter = 0;
     const detour = (a: Waypoint, b: Waypoint): Promise<Route> =>
@@ -944,7 +965,8 @@ export async function route(
         { index: 0, lastIndex: 0, count: 1, vias: [], end: [b.lon, b.lat], snapToExact: true },
         1000 + detourCounter++,
         [a.lon, a.lat],
-        a.time
+        a.time,
+        { cogDeg: a.cogDeg, mode: a.mode }
       );
 
     const t = Date.now();

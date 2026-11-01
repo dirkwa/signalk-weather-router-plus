@@ -48,16 +48,16 @@ const wp = (lon: number, lat: number): Waypoint => ({ lon, lat, time: T0, sogMs:
 function timeLegWith(land: LandMask) {
   void land;
   const vessel = makeVessel({ motorSpeedMs: 1 });
-  return (a: Waypoint, b: Waypoint): boolean => {
+  return (a: Waypoint, b: Waypoint): number | null => {
     const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, vessel, POLAR, WIND, new NoCurrent(), {
       modePolicy: 'sail_max',
       sailThreshMs: 1,
       simStepM: 200,
     });
-    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return false;
+    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return null;
     b.time = new Date(a.time.getTime() + r.seconds * 1000);
     b.mode = r.dominantMode === 'sailing' ? 'sailing' : 'motoring';
-    return true;
+    return r.penaltySeconds;
   };
 }
 
@@ -67,7 +67,7 @@ test('cross-track polish moves interior waypoints towards stronger wind, keeps t
   const timeLeg = timeLegWith(land);
   // A reach due east along lat 0, three interior waypoints 20 km apart; more wind lies north.
   const wps = [wp(0, 0), wp(0.18, 0), wp(0.36, 0), wp(0.54, 0), wp(0.72, 0)];
-  for (let i = 1; i < wps.length; i++) assert.ok(timeLeg(wps[i - 1], wps[i]));
+  for (let i = 1; i < wps.length; i++) assert.notEqual(timeLeg(wps[i - 1], wps[i]), null);
   const before = wps[wps.length - 1].time.getTime();
   const r = crossTrackPolish(wps, land, timeLeg);
   assert.ok(r.moved >= 3, `moved ${r.moved}`);
@@ -80,7 +80,7 @@ test('cross-track polish moves interior waypoints towards stronger wind, keeps t
   // Land just north of the line: no move north is allowed; a via is never moved.
   const landN = LandMask.fromPolygons([rect(1, -0.5, 0.001, 1.5, 0.5)], box, 0.002);
   const wps2 = [wp(0, 0), wp(0.18, 0), { ...wp(0.36, 0), role: 'via' as const }, wp(0.54, 0), wp(0.72, 0)];
-  for (let i = 1; i < wps2.length; i++) assert.ok(timeLeg(wps2[i - 1], wps2[i]));
+  for (let i = 1; i < wps2.length; i++) assert.notEqual(timeLeg(wps2[i - 1], wps2[i]), null);
   crossTrackPolish(wps2, landN, timeLeg);
   for (let i = 1; i < wps2.length - 1; i++) assert.ok(wps2[i].lat <= 0, `waypoint ${i} did not cross into the land (lat ${wps2[i].lat})`);
   assert.deepEqual([wps2[2].lon, wps2[2].lat], [0.36, 0], 'the via stayed');

@@ -9,7 +9,9 @@
 
 import { bboxFromLonLat, haversineDistanceM } from '../../geo/geodesy';
 import { buildCoarseGrid, forEachRingCell, type NavigabilityGrid } from '../../geo/grid';
+import { LandMask } from '../../geo/landmask';
 import { astarRoute, AstarError } from '../astar';
+import { widthProfile } from '../corridor';
 import { resizeBudget } from './context';
 import { RouteCancelled, type SearchContext } from './types';
 
@@ -119,10 +121,17 @@ export function buildSkeleton(ctx: SearchContext): SkeletonData {
       skeleton[0] = { lon: sLon, lat: sLat };
       skeleton[skeleton.length - 1] = { lon: eLon, lat: eLat };
       skeletonCum = cumulativeM(skeleton);
+      // The water's width at each point, as a corridor carries it: the guide aims the heading sweep at the skeleton
+      // only where the water is narrow (zones.ts targetForParent). Without widths every point counted as narrow and
+      // the front was pinned to the line, one step's lateral reach wide (measured on brain, 2026-10-30: 6 of 40
+      // bins occupied at every stage), so no detour round rough water or water over a limit could ever form on a
+      // leg without a corridor. The profile needs the coastline raster; the mesh as land has no raster.
+      const tw = Date.now();
+      if (ctx.landMask instanceof LandMask) widths = widthProfile(ctx.landMask, skeleton);
       progress(
         0,
         ctx.K,
-        `skeleton: ${skeleton.length} points, {distance:${skeletonCum[skeletonCum.length - 1].toFixed(0)}}, A* {time:${(Date.now() - t1) / 1000}}`
+        `skeleton: ${skeleton.length} points, {distance:${skeletonCum[skeletonCum.length - 1].toFixed(0)}}, A* {time:${(tw - t1) / 1000}}${widths ? `, widths {time:${(Date.now() - tw) / 1000}}` : ''}`
       );
       const skLen = skeletonCum[skeletonCum.length - 1];
       if (skLen > ctx.budget.budgetDistM) resizeBudget(ctx, skLen);

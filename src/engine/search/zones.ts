@@ -29,19 +29,26 @@ export interface SkeletonGuide extends SkeletonData {
   stepFor(pLon: number, pLat: number): { step: number; idx: number };
   /**
    * Where a parent at (pLon, pLat), nearest skeleton point `idx`, aims the
-   * centre of its heading sweep. In narrow water: the skeleton point one
-   * step ahead. In open water (the corridor wider than its probe there):
-   * one step along the skeleton's own direction from the parent itself, so
-   * a branch off the line keeps its offset instead of being pulled back.
+   * centre of its heading sweep. In narrow water (the step there limited by
+   * the width, stepAt): the skeleton point one step ahead. Elsewhere: one
+   * step along the skeleton's own direction from the parent itself, so a
+   * branch off the line keeps its offset instead of being pulled back.
    */
   targetForParent(idx: number, stepM: number, pLon?: number, pLat?: number): [number, number];
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   zoneKey(c: { lon: number; lat: number; viaCount: number }): string | null;
+  /**
+   * How far a candidate heading for its `viaCount`th goal still has to go, along the water: to its nearest skeleton
+   * point (within the stretch before that goal), along the skeleton to the goal's point, and from there to the goal.
+   * The straight distance without a skeleton. The stall detector's measure of progress (stages.ts): a branch against
+   * a wall a few km from the goal has the whole detour ahead of it, and the detour counts as progress.
+   */
+  remainingM(lon: number, lat: number, viaCount: number): number;
 }
 
 export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide {
   const { skeleton, skeletonCum, widths } = sk;
-  const { progress, eLon, eLat } = ctx;
+  const { progress, eLon, eLat, goals } = ctx;
   const { deltaD, candStepM } = ctx.budget;
   // ---- Narrow passages: step limits, extra stages, narrow-bin zones ------
   const nSk = skeleton ? skeleton.length : 0;
@@ -141,17 +148,48 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
       }
     }
     if (ti < 0) return [eLon, eLat];
-    // Open water: aim parallel to the skeleton from the parent itself.
-    // Aiming at the skeleton point pulled every branch back to the line,
-    // so a detour of hundreds of km could never form: Tonga → Auckland,
-    // the front never got more than 170 km off the direct line while a
-    // route 479 km west was 15 h faster.
-    // Narrow water keeps the skeleton aim, which is what finds channels.
-    if (pLon !== undefined && pLat !== undefined && widths && !Number.isFinite(widths[idx])) {
+    // Open and coastal water: aim parallel to the skeleton from the parent
+    // itself. Aiming at the skeleton point pulled every branch back to the
+    // line, so a detour of hundreds of km could never form: Tonga →
+    // Auckland, the front never got more than 170 km off the direct line
+    // while a route 479 km west was 15 h faster. Until 2026-10-30 only
+    // water wider than the width probe (Infinity) counted as open, so a
+    // coast within 30 km on one side, or a skeleton without widths, pinned
+    // the front to the line one step's lateral reach wide (measured on
+    // brain: 6 of 40 bins occupied at every stage); now only water narrow
+    // enough to shorten the step keeps the skeleton aim, which is what
+    // finds channels.
+    if (pLon !== undefined && pLat !== undefined && !(stepAt[idx] < candStepM)) {
       const b = haversineBearing(skeleton[idx].lon, skeleton[idx].lat, skeleton[ti].lon, skeleton[ti].lat);
       return projectAlongBearing(pLon, pLat, b, stepM);
     }
     return [skeleton[ti].lon, skeleton[ti].lat];
+  };
+  // The skeleton point each goal lies at (the vias and the end are on the skeleton: the corridor's chain, or the coarse
+  // A*'s), so the way to a goal along the water is the skeleton up to that point. Found in route order: each via at or
+  // after the goal before it, and the end at the skeleton's last point, which it is by construction. A point the route
+  // visits twice (a round trip, start and end the same place, routed as one search through its waypoints' circles) has
+  // two skeleton points; the nearest over the whole skeleton took the first, so the way home read as nothing left all
+  // the way home (PR #91 review, 2026-11-01).
+  const goalIdx: number[] = [];
+  if (skeleton && skeletonCum && nSk >= 2)
+    for (let gi = 0; gi < goals.length; gi++)
+      goalIdx.push(gi === goals.length - 1 ? nSk - 1 : nearestSkeleton(goals[gi].lon, goals[gi].lat, gi > 0 ? goalIdx[gi - 1] : 0));
+  const remainingM = (lon: number, lat: number, viaCount: number): number => {
+    const gk = Math.min(viaCount, goals.length - 1);
+    const g = goals[gk];
+    if (!skeleton || !skeletonCum || nSk < 2) return haversineDistanceM(lon, lat, g.lon, g.lat);
+    const gi = goalIdx[gk];
+    // The candidate's stretch: from the goal before (the start for the first) to this goal, so a branch is never
+    // read as near a later part of the skeleton it has not reached (the far side of a crossing).
+    const from = gk > 0 ? goalIdx[gk - 1] : 0;
+    const idx = nearestSkeleton(lon, lat, Math.min(from, gi), Math.max(from, gi));
+    const along = Math.max(0, skeletonCum[gi] - skeletonCum[idx]);
+    return (
+      haversineDistanceM(lon, lat, skeleton[idx].lon, skeleton[idx].lat) +
+      along +
+      haversineDistanceM(skeleton[gi].lon, skeleton[gi].lat, g.lon, g.lat)
+    );
   };
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   const zoneKey = (c: { lon: number; lat: number; viaCount: number }): string | null => {
@@ -196,5 +234,6 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     stepFor,
     targetForParent,
     zoneKey,
+    remainingM,
   };
 }

@@ -46,9 +46,9 @@ import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
 import { NoCurrent, NoWind, type CurrentSource, type WindSource } from '../environment';
 import { RouteError } from '../errors';
-import { DEFAULT_TACK_PENALTY_S, simulateLegTime, type LegSimResult, type SimOptions } from '../legsim';
+import { DEFAULT_TACK_PENALTY_S, simulateLegTime, tackChargeS, type LegArrival, type LegSimResult, type SimOptions } from '../legsim';
 import { enrichLegRanges, enrichWaypoints, OceanPropagator } from '../propagator';
-import { recomputePerWaypointMetadata, type Route, type Waypoint } from '../route';
+import { arrivalInto, recomputePerWaypointMetadata, type Route, type Waypoint } from '../route';
 import type { ComputeRouteArgs, PropagatorOptions } from '../search/types';
 import { recomputeTotals } from '../smoother';
 import { U_TOL } from '../mesh/width';
@@ -66,6 +66,8 @@ interface Env {
   wind: WindSource;
   current: CurrentSource;
   sim: SimOptions;
+  /** How the boat arrives at the first point (the leg before's last move); null at the route's start. */
+  arriving: LegArrival | null;
   /** Who the errors speak as ('experimental router', or a fixed polyline's caller). */
   who: string;
   /** What a failed leg's error suggests (the search's legs: another router or a waypoint; a fixed polyline: its caller's advice). */
@@ -81,6 +83,8 @@ export interface PolylineArgs {
   wind?: WindSource;
   current?: CurrentSource;
   sim: SimOptions;
+  /** How the boat arrives at the polyline's first point (search/types.ts ComputeRouteArgs.arriving). */
+  arriving?: LegArrival | null;
   /** Who the errors speak as, and what they say to do when a stretch cannot be sailed. */
   who: string;
   advice: string;
@@ -103,7 +107,9 @@ export class ExperimentalPropagator {
     const route = this.base.computeRoute({ ...args, polar: cp.hull });
     const env = this.layTacks(route, cp, args);
     const before = route.waypoints[route.waypoints.length - 1].time.getTime();
-    const pr = crossTrackPolish(route.waypoints, this.land, (a, b) => this.tryTimeLeg(a, b, env));
+    const pr = crossTrackPolish(route.waypoints, this.land, (a, b, prev) =>
+      this.tryTimeLeg(a, b, env, prev ? arrivalInto(prev, a) : env.arriving)
+    );
     this.finish(route, env);
     motoredBeatWarnings(route);
     args.onProgress?.(
@@ -148,6 +154,7 @@ export class ExperimentalPropagator {
         wind: args.wind,
         current: args.current,
         ...args.sim,
+        arriving: args.arriving,
         onProgress: args.onProgress,
       },
       args.who,
@@ -177,14 +184,24 @@ export class ExperimentalPropagator {
         simStepM: args.simStepM ?? 200,
         maxWindMs: args.maxWindMs,
         maxSwhM: args.maxSwhM,
+        maxWindMode: args.maxWindMode,
+        maxSwhMode: args.maxSwhMode,
+        limitAvoidStrength: args.limitAvoidStrength,
         comfortWeight: args.comfortWeight,
         tackPenaltyS: args.tackPenaltyS,
       },
+      arriving: args.arriving ?? null,
       who,
       advice,
     };
     const old = route.waypoints;
     const out: Waypoint[] = [{ ...old[0] }];
+    // How the boat arrives at the polyline's last point so far: the course into it from the point before, or at the
+    // first point the leg before's last move. Every piece and leg is charged its tack penalty against it (tryTimeLeg,
+    // layOut), not one penalty per piece the layout flags: a beat's two pieces owe one between them, the next piece
+    // owes one against the second, and a first piece that keeps the boat on its tack owes none.
+    const beforeOf = (list: Waypoint[]): LegArrival | null =>
+      list.length >= 2 ? arrivalInto(list[list.length - 2], list[list.length - 1]) : env.arriving;
     let split = 0;
     let tacks = 0;
     const motored: Waypoint[] = [];
@@ -192,7 +209,7 @@ export class ExperimentalPropagator {
       const b: Waypoint = { ...old[i] };
       if (b.mode === 'sailing') {
         const a = out[out.length - 1];
-        const pts = this.layOut(a, b, cp, env);
+        const pts = this.layOut(a, b, cp, env, beforeOf(out));
         if (pts === null) {
           motored.push(a);
           // The leg a → b is timed straight below, motoring where it cannot sail: reported on the route.
@@ -203,7 +220,7 @@ export class ExperimentalPropagator {
         tacks += n;
         for (const p of pts ?? []) out.push(p);
       }
-      this.timeLeg(out[out.length - 1], b, env);
+      this.timeLeg(out[out.length - 1], b, env, beforeOf(out));
       out.push(b);
     }
     route.waypoints = out;
@@ -211,7 +228,7 @@ export class ExperimentalPropagator {
     args.onProgress?.(
       0,
       0,
-      `experimental: convex polar: ${split} leg(s) laid out as tacks (${tacks} tack point(s), {time:${env.sim.tackPenaltyS ?? TACK_PENALTY_S}} each, as long as the wind and the land allow); arrival ${out[out.length - 1].time.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+      `experimental: convex polar: ${split} leg(s) laid out as tacks (${tacks} tack point(s), as long as the wind and the land allow; every tack or gybe costs {time:${env.sim.tackPenaltyS ?? TACK_PENALTY_S}}); arrival ${out[out.length - 1].time.toISOString().slice(0, 16).replace('T', ' ')} UTC`
     );
     for (const a of motored)
       args.onProgress?.(
@@ -222,24 +239,40 @@ export class ExperimentalPropagator {
     return env;
   }
 
-  /** Time b's arrival from a (at a's time) with the real polar, setting its mode and mixed-mode split; a leg that cannot be sailed fails the route. */
-  private timeLeg(a: Waypoint, b: Waypoint, env: Env): void {
-    if (this.tryTimeLeg(a, b, env)) return;
+  /**
+   * Time b's arrival from a (at a's time) with the real polar, setting its mode and mixed-mode split; `before` is how
+   * the boat arrives at a (the leg's tack penalty is charged against it). A leg that cannot be sailed fails the route.
+   */
+  private timeLeg(a: Waypoint, b: Waypoint, env: Env, before: LegArrival | null): void {
+    if (this.tryTimeLeg(a, b, env, before) !== null) return;
     const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, env.sim);
+    // A leg stopped by a wind or wave limit set to block: the caller's advice (motor more) does not help; the limit does.
+    const limited = r.reason === 'limited';
     throw new RouteError(
-      `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed under the ${env.sim.modePolicy} policy (${r.reason ?? 'no speed'}); ${env.advice}`
+      `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed under the ${env.sim.modePolicy} policy (${limited ? 'over the wind or wave limit' : (r.reason ?? 'no speed')}); ${limited ? 'raise the limit, set it to Avoid, or change the departure' : env.advice}`
     );
   }
 
-  /** As timeLeg, returning false instead of failing when the leg cannot be sailed. */
-  private tryTimeLeg(a: Waypoint, b: Waypoint, env: Env): boolean {
+  /**
+   * As timeLeg, returning the leg's cost beyond its time (the comfort cost and the avoid surcharge, seconds; what the
+   * polish judges a move on besides the arrival), or null instead of failing when the leg cannot be sailed.
+   */
+  private tryTimeLeg(a: Waypoint, b: Waypoint, env: Env, before: LegArrival | null): number | null {
     const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, env.sim);
-    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return false;
+    if (!Number.isFinite(r.seconds) || r.seconds <= 0) return null;
     b.mode = r.dominantMode === 'sailing' ? 'sailing' : 'motoring';
-    if (r.sailingSeconds > 0 && r.motoringSeconds > 0) b.arrivingSplit = [r.sailingSeconds, r.motoringSeconds];
+    // The tack penalty against the course into a (legsim.ts tackChargeS): time spent sailing, so in the split too.
+    const chargeS = this.chargeFor(a, b.lon, b.lat, r, env, before);
+    if (r.sailingSeconds + chargeS > 0 && r.motoringSeconds > 0) b.arrivingSplit = [r.sailingSeconds + chargeS, r.motoringSeconds];
     else delete b.arrivingSplit;
-    b.time = new Date(a.time.getTime() + r.seconds * 1000 + (b.tack ? (env.sim.tackPenaltyS ?? TACK_PENALTY_S) * 1000 : 0));
-    return true;
+    b.time = new Date(a.time.getTime() + (r.seconds + chargeS) * 1000);
+    return r.penaltySeconds;
+  }
+
+  /** The tack penalty a move from `at` to (lon, lat), timed as `r`, owes against `before` (legsim.ts tackChargeS), with the wind at `at`. */
+  private chargeFor(at: Waypoint, lon: number, lat: number, r: LegSimResult, env: Env, before: LegArrival | null): number {
+    const [, wd] = env.wind.at(at.lon, at.lat, at.time);
+    return tackChargeS(before, wd, haversineBearing(at.lon, at.lat, lon, lat), r.dominantMode === 'sailing', env.sim);
   }
 
   /** The two true headings a course at (lon, lat, t) is a mix of, or null when the polar sails it directly. */
@@ -269,8 +302,11 @@ export class ExperimentalPropagator {
    * the Cape Cod Canal's west approach: the first tack ran into a pocket the water closes round and every later one
    * halved into its corner). With a threshold of 0 (never motor) it fails the route as before.
    */
-  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] | null {
+  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env, beforeA: LegArrival | null): Waypoint[] | null {
     const motorIfStuck = env.sim.modePolicy === 'sail_max' && env.sim.sailThreshMs > 0;
+    // How the boat arrives at `at`: the piece before, or at a the course into a. Each piece's tack penalty is charged
+    // against it (stepTo), and it moves on with the piece once the piece is taken.
+    let before = beforeA;
     // Stuck with a threshold of 0: say loudly that the threshold is why (the owner's decision, 2026-10-15: no
     // backtracking in the layout; the route fails and names the setting that lets it motor out).
     const stuck = (what: string): RouteError =>
@@ -285,18 +321,26 @@ export class ExperimentalPropagator {
       if (this.land.legCrossesLandExact(at.lon, at.lat, tLon, tLat)) return null;
       const r = this.sailedThrough(at, tLon, tLat, env);
       if (r === null) return null;
+      // The piece's tack penalty: against the course the boat arrived at `at` on, by the one rule (tackChargeS), not
+      // by the `tack` flag (which marks the point for display: a tack or gybe point the layout placed).
+      const chargeS = this.chargeFor(at, tLon, tLat, r, env, before);
       // Mode and mixed-mode split as tryTimeLeg records them, so the totals book motored time as motoring.
       const p: Waypoint = {
         lon: tLon,
         lat: tLat,
-        time: new Date(at.time.getTime() + (r.seconds + (tack ? (env.sim.tackPenaltyS ?? TACK_PENALTY_S) : 0)) * 1000),
+        time: new Date(at.time.getTime() + (r.seconds + chargeS) * 1000),
         sogMs: 0,
         cogDeg: 0,
         mode: r.dominantMode === 'sailing' ? 'sailing' : 'motoring',
       };
-      if (r.sailingSeconds > 0 && r.motoringSeconds > 0) p.arrivingSplit = [r.sailingSeconds, r.motoringSeconds];
+      if (r.sailingSeconds + chargeS > 0 && r.motoringSeconds > 0) p.arrivingSplit = [r.sailingSeconds + chargeS, r.motoringSeconds];
       if (tack) p.tack = true;
       return p;
+    };
+    /** Take a piece: the boat is now at p, having arrived on the piece's course. */
+    const take = (p: Waypoint): void => {
+      before = arrivalInto(at, p);
+      at = p;
     };
     const tackTo = (h: number, d: number): Waypoint | null => stepTo(h, d, true);
     /** A piece to a given point (where the water ends on a heading). */
@@ -364,7 +408,7 @@ export class ExperimentalPropagator {
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
           );
         pts.push(p);
-        at = p;
+        take(p);
         lastHeading = -1;
         continue;
       }
@@ -408,7 +452,7 @@ export class ExperimentalPropagator {
         );
       }
       pts.push(placed);
-      at = placed;
+      take(placed);
     }
     throw new RouteError(`${env.who}: more than ${MAX_TACKS_PER_LEG} tacks on one leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}`);
   }

@@ -13,7 +13,7 @@
 import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
 import type { CurrentSource, WindSource } from '../environment';
-import { simulateLegTime, type SimOptions } from '../legsim';
+import { simulateLegTime, tackChargeS, type LegArrival, type LegSimResult, type SimOptions } from '../legsim';
 import type { LegPlan } from '../multileg';
 import type { ProgressFn } from '../progress';
 import type { PropagatorOptions } from '../propagator';
@@ -21,7 +21,7 @@ import type { RouterKind } from '../router';
 import type { CorridorInput } from '../search/types';
 import { MAX_SCAN_M } from './width';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
-import { haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { haversineBearing, haversineDistanceM, type BBox } from '../../geo/geodesy';
 import type { CellMask } from '../../geo/landmask';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint } from '../route';
 import { recomputeTotals } from '../smoother';
@@ -54,6 +54,8 @@ export interface MeshLegArgs {
   reach?: LegReach;
   /** The mesh to plan it on (the runner's id from `plan`); absent: the mesh holding the leg's points. */
   meshId?: string;
+  /** How the boat arrives at the leg's start (the leg before's last move); null or absent at the route's start. */
+  arriving?: LegArrival | null;
   progress: ProgressFn;
   shouldCancel: () => boolean;
 }
@@ -303,7 +305,8 @@ export function pathLengthM(path: [number, number][]): number {
  * passage; the request's own policy for an open stretch the pipeline
  * follows along the mesh), then wind / wave / current enrichment. Null
  * when a segment cannot be made (stuck, or the current cancels the
- * boat's speed): the caller falls back to the coastline search. A
+ * boat's speed), with the simulator's reason in `stuck` when given: the
+ * caller falls back to the coastline search, or names the reason. A
  * sail_max stretch is not walked here but laid out with tacks
  * (experimental/propagator.ts sailPolyline).
  */
@@ -314,17 +317,30 @@ export function routeFromMeshPath(
   polar: PolarDiagram | null,
   wind: WindSource,
   current: CurrentSource,
-  sim: SimOptions
+  sim: SimOptions,
+  stuck?: { reason?: LegSimResult['reason'] },
+  /** How the boat arrives at the path's first point (the stretch before's last move); null at the route's start. */
+  arriving: LegArrival | null = null
 ): Route | null {
   const wps: Waypoint[] = [{ lon: path[0][0], lat: path[0][1], time: departure, sogMs: 0, cogDeg: 0, mode: 'motoring' }];
   let t = departure;
+  // Each segment's tack penalty against the course into its start (legsim.ts tackChargeS): a walk under `fastest` sails
+  // where that is quicker, and a bend that puts the wind on the other side costs what it costs everywhere else.
+  let before = arriving;
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1];
     const c = path[i];
     const r = simulateLegTime(a[0], a[1], t, c[0], c[1], vessel, polar, wind, current, sim);
-    if (!Number.isFinite(r.seconds)) return null;
-    t = new Date(t.getTime() + r.seconds * 1000);
-    wps.push({ lon: c[0], lat: c[1], time: t, sogMs: 0, cogDeg: 0, mode: r.dominantMode === 'sailing' ? 'sailing' : 'motoring' });
+    if (!Number.isFinite(r.seconds)) {
+      if (stuck) stuck.reason = r.reason;
+      return null;
+    }
+    const cog = haversineBearing(a[0], a[1], c[0], c[1]);
+    const mode = r.dominantMode === 'sailing' ? 'sailing' : 'motoring';
+    const chargeS = tackChargeS(before, wind.at(a[0], a[1], t)[1], cog, mode === 'sailing', sim);
+    t = new Date(t.getTime() + (r.seconds + chargeS) * 1000);
+    wps.push({ lon: c[0], lat: c[1], time: t, sogMs: 0, cogDeg: 0, mode });
+    before = { cogDeg: cog, mode };
   }
   const route: Route = {
     waypoints: wps,

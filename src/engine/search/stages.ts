@@ -7,7 +7,7 @@
  * arithmetic is unchanged; the golden routes hold that.
  */
 
-import { haversineDistanceM, perpendicularOffsetM } from '../../geo/geodesy';
+import { haversineDistanceM, latLonText, perpendicularOffsetM } from '../../geo/geodesy';
 import type { StageFront } from '../route';
 import { fmtUtc, forecastNote, refuseDeadEnd, resetTry, tryNote } from './context';
 import { propose } from './propose';
@@ -47,6 +47,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         `auto via at ${g.name ?? 'a narrow passage'}, width ${((g.widthM ?? 0) / 1000).toFixed(1)} km (disc radius ${(g.radiusM / 1000).toFixed(1)} km)`
       );
   }
+  // The start carries how the boat arrives there (the leg before's last move), so its first move pays for a tack
+  // like every other move (propose.ts); at the route's start nothing came before and no first move is a tack.
   const stages: Candidate[][] = [
     [
       {
@@ -57,8 +59,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         costS: 0,
         parentIdx: -1,
         sogMs: 0,
-        cogDeg: 0,
-        mode: 'motoring',
+        cogDeg: args.arriving?.cogDeg ?? 0,
+        mode: args.arriving?.mode ?? 'motoring',
         sailingS: 0,
         motoringS: 0,
         viaCount: startViaCount,
@@ -67,7 +69,9 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
     ],
   ];
 
+  /** The least way still to go along the water seen so far (guide.remainingM), and the least straight distance, for the words. */
   let bestEver = Infinity;
+  let bestEverStraight = Infinity;
   let stagesWithoutGain = 0;
   let bestEverDeepest = -1;
   for (let stage = 0; stage < maxStages; stage++) {
@@ -218,19 +222,28 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
     // via, or the destination once every via is crossed), not towards the
     // destination: a branch can sit a few km from the destination with a
     // via still uncrossed (job 58b50b0d: east of Crete, the Kythira via
-    // behind it) and must not count as progress. A gain under a twentieth
-    // of the stage step is no gain.
+    // behind it) and must not count as progress. It is measured along the
+    // water (the skeleton, guide.remainingM), not straight through land:
+    // measured straight, a branch pressed against a wall a few km short of
+    // the goal set the mark, the detour round the wall then counted as no
+    // progress, and the rule stopped a search whose front was through the
+    // gap and closing (docs/plans/stall-progress-along-water.md,
+    // 2026-11-01). A gain under a twentieth of the stage step is no gain.
     let deepest = 0;
     for (const c of retained) deepest = Math.max(deepest, c.viaCount);
     let goalRemaining = Infinity;
+    let goalStraight = Infinity;
     for (const c of retained) {
       if (c.viaCount !== deepest) continue;
-      goalRemaining = Math.min(goalRemaining, haversineDistanceM(c.lon, c.lat, goals[deepest].lon, goals[deepest].lat));
+      goalRemaining = Math.min(goalRemaining, guide.remainingM(c.lon, c.lat, c.viaCount));
+      goalStraight = Math.min(goalStraight, haversineDistanceM(c.lon, c.lat, goals[deepest].lon, goals[deepest].lat));
     }
     if (deepest > bestEverDeepest) {
       bestEverDeepest = deepest;
       bestEver = Infinity;
+      bestEverStraight = Infinity;
     }
+    bestEverStraight = Math.min(bestEverStraight, goalStraight);
     if (goalRemaining < bestEver - 0.05 * candStepM) {
       bestEver = goalRemaining;
       stagesWithoutGain = 0;
@@ -251,29 +264,39 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         // user's waypoints), as it does when the stages run out.
         const g = goals[deepest];
         throw new ViasNotCrossedError(
-          `the search is boxed in before crossing all ${nVias} via(s): deepest branch crossed ${deepest}, and for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km to the next via${g.name ? ` at ${g.name}` : ''}; ${tryNote(ctx)}.${forecastNote(ctx)}`
+          `the search is boxed in before crossing all ${nVias} via(s): deepest branch crossed ${deepest}, and for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km along the water to the next via${g.name ? ` at ${g.name}` : ''}; ${tryNote(ctx)}.${forecastNote(ctx)}`
         );
       }
-      // The front at the destination with no clear final leg: the point
-      // sits in a land cell of the raster (too close to the shore).
+      // The front within one step of the point this search heads for (the
+      // destination, or a waypoint ending this leg) with no clear final
+      // leg: the point sits in a land cell of the raster (too close to the
+      // shore). Said as how close it came (straight), not "reached".
       const atGoal =
-        bestEver <= candStepM
-          ? ' The front reached the destination but no final leg to it was clear of land: the point is too close to the shore for the land raster.'
+        bestEverStraight <= candStepM
+          ? ` The search came within {length:${Math.round(bestEverStraight)}} of the point it was heading for (${latLonText(eLat, eLon)}), but no final leg to it was clear of land: the point is too close to the shore for the coastline data.`
           : '';
-      const stalled = `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination`;
+      const stalled = `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km along the water to the destination`;
       progress(stage + 1, Math.max(kEff, stage + 1), `${stalled}; ${tryNote(ctx)}`);
       // Moves stopped by a limit, the coast, the wind or no boat speed: when they are at least half the moves tried, the
       // user is told that reason, then the stall; fewer, and the stall is told on its own.
       const stopped = lastTry.limited + lastTry.land + lastTry.noGo + lastTry.stuck;
-      if (lastTry.tried > 0 && 2 * stopped >= lastTry.tried)
-        // The parents: the candidates whose moves lastTry counted.
-        throw refuseDeadEnd(
-          ctx,
-          parents,
-          'boxed_in',
-          ` The front made no progress for ${stagesWithoutGain} stages.${atGoal}${forecastNote(ctx)}`
-        );
-      throw new RouteError(`${stalled}.${atGoal}${forecastNote(ctx)}`, 'boxed_in');
+      const err =
+        lastTry.tried > 0 && 2 * stopped >= lastTry.tried
+          ? // The parents: the candidates whose moves lastTry counted.
+            refuseDeadEnd(
+              ctx,
+              parents,
+              'boxed_in',
+              ` The front made no progress for ${stagesWithoutGain} stages.${atGoal}${forecastNote(ctx)}`
+            )
+          : new RouteError(`${stalled}.${atGoal}${forecastNote(ctx)}`, 'boxed_in');
+      // An end where the leg joins a chart mesh: the terminal tries the water path first (terminal.ts waterApproach)
+      // and throws this when that fails too.
+      if (args.endApproach === 'water') {
+        ctx.stallError = err;
+        break;
+      }
+      throw err;
     }
     for (const c of retained) {
       for (const vi of c.viaIdxs) {

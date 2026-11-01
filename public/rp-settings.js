@@ -357,6 +357,8 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, checkEveryRead, chec
       values = body.values;
       fillFromValues();
       showEvery(values && values.forecast ? values.forecast.refreshInterval : null);
+      // The Route tab's per-route controls show the routing settings as their server state (rp-plan.js _initLimitModes).
+      window.dispatchEvent(new CustomEvent('rp:settings', { detail: values }));
       const rl = body.reloaded || {};
       const notes = [];
       if (rl.forecast) notes.push('<span class="warn">The forecast is reloading</span> for the new horizon / field set. Overlays keep the previous forecast until it finishes; a download can take several minutes.');

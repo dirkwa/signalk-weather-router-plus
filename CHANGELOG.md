@@ -8,6 +8,129 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The search's world is as wide as the search can reach.** The land
+  raster's box, outside which every point counts as land, was the
+  corridor plus 1°, so on a long leg the search could never consider a
+  detour more than about 80 km off the corridor, whatever the effort,
+  the avoid strength or the weather: on a Placentia Bay to mid-Atlantic
+  leg the front pressed on the box's west edge for 35 stages while the
+  water under the wave limit lay 150 km beyond it. The box is now widened
+  to the heading sweep's reach over the leg (its length × the sine of the
+  sweep's half angle), per side, never under the 1° it had, and within the
+  raster's 120° × 90° limit. Legs under about 200 km at the normal sweep
+  keep their box, and the coastal raster its cell size. Measured on brain
+  (2026-10-31, that leg, Maximum effort): time over the wave limit 36,082
+  s → 22,920 s, the roughest seas met 3.3 m → 3.1 m, for 2.2 h more
+  passage; at the normal sweep the route is unchanged. The progress log
+  names the search area and the reach.
+- **The coast near the route stays sharp in the wider world.** The land
+  raster has one cell budget, so a wider world means coarser cells (the
+  Placentia Bay leg: 1.1 km instead of 550 m; a 70 km coastal hop with a
+  3° margin: 220 m instead of 110 m and a channel that had to be refined).
+  The world is now drawn at the size the budget allows, and the band along
+  the corridor (its own box plus 1°) is drawn again at the size that band
+  alone would get, as tiled patches the land test already looks up first.
+  Short legs, whose world is the band, are untouched. The progress log
+  names both cell sizes.
+- **Every tack costs the tack penalty, wherever it happens.** Only the
+  search's stage moves charged it. The final hop to the destination (or
+  to the circle), the two legs of a final beat against the course the
+  branch arrived on, the moves of a water approach at a chart's edge, the
+  refined router's laid-out tacks and its polish, the shortcut smoother's
+  legs, a walk along a chart-mesh route, and the first move of a leg after
+  the leg before it (a waypoint, a mesh stretch, a repair detour) did not:
+  a dead-upwind beat whose one tack was its final hop arrived at the same
+  time with a penalty of 0 and of 1,800 s, and the branch was chosen for a
+  tack it did not pay for. The refined router charged one penalty per
+  laid-out piece whatever its heading, the first from the start included,
+  and none at the joins between pieces (on a 111 km beat: 12 charged, 23
+  sailed). One rule now applies to every move timed after another (the
+  course and mode the boat arrived on, the wind where the move starts, the
+  move's course and mode): in the arrival time, in the sailing time, and
+  in the search's and the polish's choices. Sailing routes that tack on
+  their final hop arrive later by the penalty (30 s by default); the
+  refined router's beats are timed by the tacks they sail.
+
+- **The land raster's cell budget holds for the widest world.** The cell
+  sizes the budget chose from ended at 0.01°, so a world the budget could
+  not hold at 0.01° was drawn at 0.01° anyway: a transatlantic leg at
+  Maximum effort, or any world at the 120° × 90° limit, meant 108 M cells
+  (108 MB, twice with the land buffer) against a budget of 25 M. The
+  choice now goes on to 0.02°, 0.05° and 0.1° until the budget holds; the
+  band along the route keeps its own finer cells. No leg under the budget
+  changes (PR #91 review).
+- **A route's land mask no longer holds the world's coastline polygons.**
+  The mask decoded every coastline piece in its box and kept them for the
+  exact tests, unbounded by the cell budget: 110,000 polygons and 270 MB
+  of process memory for a search world at its 120° × 90° limit, 14 MB on
+  the Placentia Bay leg at Maximum effort (brain, 2026-11-01). The raster
+  and the band's finer patches are now drawn from the coastline tiles'
+  bytes, as the map's land layer already was, and each exact test reads
+  the pieces of the tiles it touches, served by the tile store's 24 MB
+  per-thread cache. Same raster, same pieces, same answers (the tile-built
+  mask is compared against the polygon-built one in the tests, patches and
+  buffer included); less memory, and an exact test no longer scans every
+  polygon of the world (PR #91 review; docs/plans/land-mask-from-tiles.md).
+- **A passage's width is the water the route is in.** The width profile
+  (the step limits in narrow water, the bins across a passage, where the
+  sweep aims at the skeleton, the local refinement and the fine re-trace)
+  took the longest run of water within 2.5 km of each skeleton point, so a
+  channel behind a barrier thinner than that read as the sea beyond it
+  (measured 2026-11-01: a 1 km channel behind 200 m to 1 km of barrier
+  read 28–29 km; the Lauwersoog inlet and the Halifax approach read 28 km
+  where the water was 2–4 km). It is now the water the point sits in, from
+  shore to shore. A skeleton point that lies on land (a water grid cell's
+  centre on an islet or a bank, the case the 2.5 km window served) reads 0
+  and is re-traced into the water as a narrow stretch, which the corridor
+  already did for narrow water (docs/plans/width-profile-barriers.md).
+- **The search's stall rule measures progress along the water.** A front
+  that came no closer to its goal for three stages after the planned ones
+  was refused as boxed in, with "closer" measured straight through land: a
+  branch pressed against a wall a few km short of the destination set the
+  mark, the detour round the wall then counted as no progress, and the
+  rule stopped a search whose front was through the gap and closing
+  (measured 2026-11-01: a 1 km gap 33 km along a wall, 12 stages, refused;
+  the code before the sweep-aim change arrived, by 2 km of margin). The
+  distance still to go is now measured along the skeleton, the water the
+  search follows: to the nearest skeleton point, along it to the goal's
+  point, and to the goal. A truly stuck front is refused as before; the
+  refusal says "along the water" (docs/plans/stall-progress-along-water.md).
+- **A round trip's way home is measured home.** A route that returns to
+  a place it left, routed as one search through its waypoints' circles
+  (start and end the same harbour, approximate precision), has that place
+  on its skeleton twice; the stall rule's goal lookup took the first, so
+  on the whole way home it read about 2 km left (measured 2026-11-01, a
+  111 km out-and-back), and a homeward half that needed more than the
+  planned stages was refused as boxed in while closing on home. The goals
+  are now placed on the skeleton in route order, the end at its last point
+  (PR #91 review).
+- **A re-routed corridor gets its fine band too.** When the route raster
+  closed a passage and the corridor was re-routed round it, the land mask
+  was kept whenever the new corridor's world still fitted the old one, with
+  the fine band drawn for the first path. A longer path widens the world,
+  so this could only happen where the world was already at its 120° × 90°
+  limit; there the new path ran on the coarse world raster. The mask is
+  asked for again whenever the new corridor's box leaves the band drawn
+  (PR #91 review).
+- **The world's longitude margin holds at its poleward edge.** The sweep's
+  reach was turned into degrees of longitude at the box's middle latitude,
+  so towards the poleward end of a long high-latitude leg the same metres
+  spanned more degrees than the margin, and a branch could meet the edge
+  there. It is now sized at the poleward edge the reach can fill; worlds
+  grow a little (the Placentia Bay leg at Maximum effort: 38.6° to about
+  54° wide, still within the cell budget) (PR #91 review).
+- **The water approach at a chart's edge walks a window, not the whole
+  raster.** Its distance field took 4 bytes for every cell of the search's
+  world. It now covers the box round the front and the end, padded by one
+  stage step, and widens only while the best candidate's way by water is
+  longer than the pad (then no shorter way can lie outside), so the answer
+  is the one the whole raster gave (PR #91 review).
+
+- An open stretch ending where the leg joins the chart mesh no longer
+  stalls when that point lies up a channel the search's straight moves
+  cannot enter: with no clear straight final leg, the last part follows
+  the shortest path over water to it, as straight moves clear of land.
+
 - Accept `auto` and `signalk-active` selections when submitting routes and
   departure windows. Their provider check stays at dispatch; local file tokens
   are still checked before queuing. Tokenless previews follow `polarSource`,
@@ -16,6 +139,49 @@ uses [Semantic Versioning](https://semver.org/).
   the existing linear polar model and per-wind-speed no-go floors.
 - Keep the polar picker filter during automatic refresh; motor-only routes
   accept managed-polar tokens without resolving them as local files.
+- A chart-mesh segment the route could not make said "cannot be made
+  against the current" whatever the cause; it now names it: over the wind
+  or wave limit, a current stronger than the boat, the polar's no-go
+  angle, or no boat speed.
+- A chart mesh's tiles with no chart data are no longer mesh water. Each
+  mesh covers its district's whole rectangle, and tiles no chart covers
+  (Canadian water off Nova Scotia in 01CGD, much of the open Gulf in 07CGD)
+  were water of unknown depth that the open-water search had to keep out
+  of. That made the rectangle's straight edge a wall at sea, and a leg from
+  open water into the charts could be aimed at a point the search could not
+  reach: a route from Greenland to Block Island stalled 25 km off Cape
+  Sable, at the top of a channel one raster cell wide between the mesh's
+  edge and the coast. Those tiles are now left to the open-water search, and
+  a leg joins the charts where they begin. The rough cuts and joins are
+  rebuilt once for this (the first route that needs one, or Rebuild in the
+  plugin configuration).
+- A route boxed in near a point close to the shore no longer says "the
+  front reached the destination" when it stopped kilometres short, or
+  calls a waypoint ending the leg "the destination": it says how close the
+  search came to which point. A search stopped by land alone is no longer
+  told to choose another departure or offered a longer forecast horizon.
+- A laid-out leg stopped by a wind or wave limit set to block said
+  "(limited); raise Min sail speed so that stretch is motored"; it now
+  says it is over the limit and advises raising the limit, setting it to
+  Avoid, or changing the departure.
+- **The search can widen on legs without a corridor and along coasts.**
+  The heading sweep aimed at the skeleton point ahead wherever the
+  corridor's width was not open water (wider than 60 km), and a leg
+  routed on the per-route skeleton (the coastline parts of a leg that
+  meets a chart mesh, the corridor fallback, `--no-water-grid`) had no
+  widths at all, so every branch was pulled back to the line and the
+  front stayed one step's lateral reach wide (measured: 6 of 40 bins at
+  every stage). No detour round rough water or water over a limit could
+  form there. Every skeleton now carries a width profile, and the sweep
+  aims at the skeleton only where the water is narrow enough to shorten
+  the step. Routes on such legs change.
+- **Motor routes read the forecast.** A Motor route loaded no forecast,
+  so its wind and wave limits and its comfort weight judged a calm sea and
+  never acted, on open water or on the chart mesh, and the mesh route was
+  walked whole under motor instead of its open stretches being searched.
+  A motor route now loads the forecast like any other (`no_forecast`
+  still routes with calm wind), and its open stretches on the mesh are
+  searched under motor as under sail.
 - **The panel fits the screen on an iPad.** Its height was capped with
   `vh`, which is the viewport with the browser's bars retracted (MDN,
   `<length>`). This page never scrolls, so Safari's bars stay out, and
@@ -24,6 +190,55 @@ uses [Semantic Versioning](https://semver.org/).
   is, with `vh` kept for browsers without it; the conditions card on a
   phone held sideways likewise.
 
+
+- **Where a leg joins the charts is chosen by distance over water.** The
+  planner costed each place where open water meets a chart mesh by a
+  straight line, through land. From Greenland to a waypoint at Block Island
+  it aimed the open-water part at the charts off Grand Manan, nearest as the
+  crow flies but the long way round Nova Scotia by sea, and the coastline
+  search stalled about 290 km short. Entries (and exits into the open water
+  a leg ends in) are now costed by the shortest way over the open-water map,
+  and one the water does not reach is not used.
+- **Find Route works in power-boat mode without a boat name or cruise
+  speed.** It stayed off until both were filled in; an empty one is now
+  simply not sent, and the plugin's own vessel settings (its motor speed)
+  apply, the line under the fields saying so for the speed. A route
+  sent before the display units have loaded uses the saved cruise speed as
+  saved (m/s), and the line is checked again once they have.
+- **Power boats see the wind and wave limits.** They sat in the
+  sail-only Sailing strategy section, so a power boat's routes were sent
+  with limits its user could not see or change; they now sit with Comfort
+  in the Route tab's Limits and comfort section, for every vessel type.
+- **Compare departures no longer shows another route's departures.** The
+  table stayed until Compare departures was pressed again, through Reset,
+  a new Find Route, another saved route opened or the markers moved, and
+  the newest comparison came back on every page load whatever route was
+  planned. It now leaves the screen when its route does (one still
+  computing stays, so it can be cancelled), is marked out of date when the
+  markers move, and comes back on load only for the plan on the page.
+  A comparison started and then changed under (a marker moved before its
+  first poll) is marked out of date from that first poll, by its request
+  against the plan; the plan a comparison is matched against includes the
+  waypoint precision and, when approximate, each waypoint's circle, so one
+  computed before those changed is not shown as current (PR #91 review).
+- **The per-route limit controls say what the route will get.** Block /
+  Avoid for each limit showed "Block" while the routing settings had not
+  loaded, or had failed to load, though nothing was sent and the server
+  might avoid; and the remembered avoid strength was not sent while the
+  modes showed Block, so with a mode left to a server set to Avoid the
+  server's strength replaced the user's. The four controls (the two
+  modes, the avoid strength, comfort) now follow one rule, on the web page
+  and in the Freeboard panel: each is in one of three states. Unknown, the
+  settings not loaded: it says "Server setting" and sends nothing. Server,
+  the settings loaded and nothing chosen here: it says "Server setting
+  (Avoid)" (a slider sits at the server's value, its text "server setting
+  (1.5)") and sends nothing, so the route gets the setting as it is when
+  it runs. User, chosen here and remembered: it shows the value and sends
+  it, the strength whatever the modes show. A select goes back to the
+  server's through its first option, a slider through a "Use server
+  setting" link beside its value. The strength row hides only when both
+  limits are known to be Block. A save on the Defaults tab updates the
+  server state at once (PR #91 review, 2026-10-30).
 
 ### Added
 
@@ -36,6 +251,31 @@ uses [Semantic Versioning](https://semver.org/).
   `signalk-active` API polar tokens. Managed tables are adapted from canonical
   SI resources into the existing `PolarDiagram`; interpolation and routing math
   are unchanged. Each sailing route uses a fixed provider snapshot.
+- **The wind and wave limits can avoid instead of block.** Each limit has
+  a mode: Block (as before: the leg is not allowed) or Avoid (allowed, but
+  time over the limit counts (1 + strength) times as long when the route
+  is chosen, however far over; strength 1 by default). Settings
+  `routing.maxWindMode`, `routing.maxSwhMode`, `routing.limitAvoidStrength`;
+  request fields `max_wind_mode`, `max_swh_mode`, `limit_avoid_strength`;
+  a Block/Avoid switch beside each limit and an Avoid strength on the web
+  page and in the Freeboard panel. The surcharge is part of each
+  candidate's cost in the search, the terminal choice, the refined
+  router's polish and the shortcut smoother, so the route goes round such
+  water where that costs less than the surcharge and through it where
+  not. Each leg that spends time over a limit, block or avoid, carries a
+  `wind_over_limit` or `waves_over_limit` warning with the seconds over,
+  worked out on the final route, so simplification no longer drops it.
+  The web page and the Freeboard panel send a mode or strength only once
+  the user has chosen it or the routing settings have loaded, so the
+  server's own setting applies until then.
+
+- **Comfort on the Route tab.** The comfort setting (how much the route
+  avoids rough water) is now a slider in the Route tab's new Limits and
+  comfort section, for sail and power boats alike, and beside the limits in the Freeboard
+  panel, chosen per route and remembered per user (synced like the other
+  route choices); the routing setting is where it starts, and is what a
+  route gets until the user chooses. It was only in Settings, for the
+  whole server.
 - **The data sources say how fresh they are on a touch screen too.**
   When a run was published and the next is due were only in a pill's
   tooltip, which a touch screen never shows, and Refresh forecast was
@@ -57,6 +297,13 @@ uses [Semantic Versioning](https://semver.org/).
 - The Signal K App Store lists Polar Management (`signalk-polar-management`)
   as a recommended plugin, beside signalk-internet (`signalk.recommends` in
   `package.json`).
+- **The route's progress shows where Find Route was pressed.** The phase
+  bar, what runs and Cancel sat below Clear all and the plan hint, out of
+  view on a short screen such as an iPad's (in a 1180×690 window at
+  763–801 px, measured in Chromium), so a computing route looked stuck.
+  While a route computes they now take Find Route's place, scrolled into
+  view once at the start; the text keeps to one line so the box keeps
+  its height. Find Route comes back when the job ends.
 
 ## [0.2.1-beta.1] - 2026-10-29
 
@@ -190,13 +437,6 @@ uses [Semantic Versioning](https://semver.org/).
   (`tsconfig.public.json`, `checkJs`). The scripts gained JSDoc types, and
   six date checks and subtractions now go through `getTime()` (same
   results); the page behaves as before.
-- **The route's progress shows where Find Route was pressed.** The phase
-  bar, what runs and Cancel sat below Clear all and the plan hint, out of
-  view on a short screen such as an iPad's (in a 1180×690 window at
-  763–801 px, measured in Chromium), so a computing route looked stuck.
-  While a route computes they now take Find Route's place, scrolled into
-  view once at the start; the text keeps to one line so the box keeps
-  its height. Find Route comes back when the job ends.
 
 ### Fixed
 

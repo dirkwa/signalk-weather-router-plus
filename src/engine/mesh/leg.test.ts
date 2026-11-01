@@ -243,9 +243,14 @@ test('pipeline: a covered motoring leg is routed on the mesh, the coastline sear
   // from the worker's files only.
   assert.equal(boxes.length, 1);
   assert.ok(boxes[0].west <= -2 && boxes[0].east >= 3 && boxes[0].south <= -1.5 && boxes[0].north >= 2.5, JSON.stringify(boxes[0]));
-  assert.deepEqual(
-    r.waypoints.map(w => [w.lon, w.lat]),
-    path
+  // The open stretch is searched under motor as under sail (2026-10-30), from the mesh route's start to its end.
+  const first = r.waypoints[0];
+  const last = r.waypoints[r.waypoints.length - 1];
+  assert.deepEqual([first.lon, first.lat], path[0]);
+  assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6);
+  assert.ok(
+    messages.some(m => /segment 1\/1: open water, .* the isochrone search made it \d+ waypoints/.test(m)),
+    messages.join('\n')
   );
   assert.equal(calls.length, 1);
   assert.deepEqual((calls[0] as { rules: unknown }).rules, {
@@ -687,7 +692,8 @@ test('pipeline: a leg through waypoint circles inside the mesh is planned on the
     assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
     const via = r.waypoints.filter(w => w.role === 'via');
     assert.equal(via.length, 1);
-    assert.deepEqual([via[0].lon, via[0].lat], [0.5, 0.6]);
+    // The circle is the searched stretch's via (under motor too, 2026-10-30): the route is marked where it enters it.
+    assert.ok(haversineDistanceM(via[0].lon, via[0].lat, 0.5, 0.6) <= 300 + 1, `${via[0].lon}, ${via[0].lat}`);
     const warned = messages.some(m => /^WARNING: chart mesh: waypoint 1: no water the boat can use within \{length:300\} of it/.test(m));
     assert.equal(warned, movedM > 300, messages.join('\n'));
   }
@@ -814,10 +820,14 @@ test("pipeline: a leg the charts' plan splits is planned stretch by stretch, on 
       [at, end],
     ]);
     assert.deepEqual(meshIds, ['A', 'B']);
-    assert.deepEqual(
-      r.waypoints.map(w => [w.lon, w.lat]),
-      [start, at, end]
+    // Each stretch is searched on its mesh (under motor too, 2026-10-30): from the start, through the transfer point, to the end.
+    const pts = r.waypoints.map(w => [w.lon, w.lat] as [number, number]);
+    assert.deepEqual(pts[0], start);
+    assert.ok(
+      pts.some(p => Math.abs(p[0] - at[0]) < 1e-9 && Math.abs(p[1] - at[1]) < 1e-9),
+      `the transfer point is a waypoint: ${JSON.stringify(pts)}`
     );
+    assert.ok(Math.abs(pts[pts.length - 1][0] - end[0]) < 1e-6 && Math.abs(pts[pts.length - 1][1] - end[1]) < 1e-6);
     assert.deepEqual(r.legSources, ['mesh']);
     assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
   }

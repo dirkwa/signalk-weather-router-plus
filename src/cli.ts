@@ -19,6 +19,9 @@
  * The corridor comes from the global water grid (data/water-grid-0.02.bin.gz
  * by default; `--water-grid <file>` for another, `--no-water-grid` for the
  * old per-route skeleton); `--allow-canals` opens known canals.
+ * Limits: `--max-wind <m/s>`, `--max-swh <m>`, each `--max-wind-mode` /
+ * `--max-swh-mode block|avoid` (default block), `--avoid-strength <n>` (the
+ * extra seconds per second over a limit set to avoid; default 1).
  */
 
 import * as fs from 'node:fs';
@@ -38,7 +41,7 @@ import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
 import type { Route } from './engine/route';
 import { routeToGeoJSON } from './plugin/routeformat';
-import type { ModePolicy } from './engine/legsim';
+import { LIMIT_MODES, type LegArrival, type LimitMode, type ModePolicy } from './engine/legsim';
 import { PolarDiagram } from './vessel/polar';
 import { makeVessel } from './vessel/vessel';
 
@@ -75,6 +78,23 @@ async function main(): Promise<void> {
   const cacheDir = arg('cache', './ecmwf-cache')!;
   const stages = Number(arg('stages', '20'));
   const motorKts = Number(arg('motor-kts', '6'));
+  const limitNum = (name: string): number | undefined => {
+    const v = arg(name);
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`--${name}: expected a number >= 0 (got "${v}")`);
+    return n;
+  };
+  const limitMode = (name: string): LimitMode => {
+    const v = arg(name, 'block')!;
+    if (!(LIMIT_MODES as readonly string[]).includes(v)) throw new Error(`--${name}: expected ${LIMIT_MODES.join(' or ')} (got "${v}")`);
+    return v as LimitMode;
+  };
+  const maxWindMs = limitNum('max-wind');
+  const maxSwhM = limitNum('max-swh');
+  const maxWindMode = limitMode('max-wind-mode');
+  const maxSwhMode = limitMode('max-swh-mode');
+  const limitAvoidStrength = limitNum('avoid-strength');
   const viasArg = arg('via');
   const vias: Stop[] | undefined = viasArg
     ? viasArg.split(';').map(v => {
@@ -119,12 +139,16 @@ async function main(): Promise<void> {
       );
     }
   }
-  const landFor = (b: ReturnType<typeof bboxFromLonLat>): LandMask => {
+  const landFor = (b: ReturnType<typeof bboxFromLonLat>, band?: ReturnType<typeof bboxFromLonLat>): LandMask => {
     const t1 = Date.now();
     const r = LandMask.chooseResolution(b);
     const m = LandMask.fromCoastline(coast, b, { resolutionDeg: r });
+    // The band along the leg at its own cell size inside the coarser world (LandMask.refineBand).
+    const fine = band ? m.refineBand(band) : null;
     log(
-      `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°, ${Date.now() - t1} ms`
+      `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.pieces} coastline pieces drawn, ${m.nx}x${m.ny} cells at ${r}°` +
+        (fine ? `, the leg's band at ${fine.resolutionDeg}° in ${fine.patches} patch(es)` : '') +
+        `, ${Date.now() - t1} ms`
     );
     return m;
   };
@@ -154,7 +178,16 @@ async function main(): Promise<void> {
     propagator: { subsectors: d.subsectors, headings: d.headings, headingIncrementDeg: d.headingIncrement },
     vessel,
     polar,
-    sim: { modePolicy: mode, sailThreshMs: d.sailThreshold, simStepM: d.simStep },
+    sim: {
+      modePolicy: mode,
+      sailThreshMs: d.sailThreshold,
+      simStepM: d.simStep,
+      maxWindMs,
+      maxSwhM,
+      maxWindMode,
+      maxSwhMode,
+      limitAvoidStrength,
+    },
     simplifyM: d.simplify,
     smoother: d.smoother,
     smootherTolerance: d.smootherTolerance,
@@ -173,8 +206,8 @@ async function main(): Promise<void> {
     shouldCancel: () => false,
     log,
   };
-  const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
-    runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
+  const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> =>
+    runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture, arriving);
   const routeT0 = Date.now();
   const route = await routeMultiLeg({
     stops,

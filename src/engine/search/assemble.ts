@@ -17,7 +17,7 @@ import type { SkeletonGuide } from './zones';
 
 export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: Candidate[][], t: Terminal): Route {
   const { bestC, stageOfBest, tackCand, finalCand } = t;
-  const { args, wind, current, polar, vessel, simOpts, progress, goals, nVias, fronts } = ctx;
+  const { wind, current, polar, vessel, simOpts, progress, goals, nVias, fronts } = ctx;
   const { skeleton, kEff } = guide;
   // Back-trace.
   const chain: Candidate[] = [];
@@ -30,6 +30,7 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
     curStage--;
   }
   chain.reverse();
+  if (t.approach) chain.push(...t.approach);
   if (tackCand) chain.push(tackCand);
   if (finalCand) chain.push(finalCand);
   // A candidate that landed on the destination (the stage step dividing
@@ -144,7 +145,8 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
   route.fronts = fronts;
   recomputePerWaypointMetadata(route);
 
-  // Final validation against the exact polygons.
+  // Final validation against the exact polygons. (Legs over a wind or wave limit are found on the finished leg,
+  // after simplification and any re-timing: engine/smoother.ts limitWarnings.)
   const warns: RouteWarning[] = [];
   for (let i = 0; i + 1 < wps.length; i++) {
     const a = wps[i];
@@ -153,28 +155,14 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
       warns.push({ leg_index: i, violation: 'leg_crosses_land', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
     }
   }
-  // Legs over a wind or wave limit at their waypoints (the search tested
-  // sub-steps; a difference at the waypoints is possible and should show).
-  for (let i = 1; i < wps.length; i++) {
-    const a = wps[i - 1];
-    const b = wps[i];
-    if (args.maxWindMs !== undefined && b.windMs !== undefined && b.windMs > args.maxWindMs)
-      warns.push({ leg_index: i - 1, violation: 'wind_over_limit', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
-    if (args.maxSwhM !== undefined && b.swhM !== undefined && b.swhM > args.maxSwhM)
-      warns.push({ leg_index: i - 1, violation: 'waves_over_limit', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
-  }
   route.validated = true;
   if (warns.length) {
     route.warnings = warns;
-    const count = (v: RouteWarning['violation']): number => warns.filter(w => w.violation === v).length;
-    const parts: string[] = [];
-    const land = count('leg_crosses_land');
-    const wind = count('wind_over_limit');
-    const waves = count('waves_over_limit');
-    if (land) parts.push(`${land} leg(s) cross land in the exact polygon check`);
-    if (wind) parts.push(`${wind} leg(s) over the wind limit at a waypoint`);
-    if (waves) parts.push(`${waves} leg(s) over the wave limit at a waypoint`);
-    progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1), `WARNING: ${parts.join('; ')}`);
+    progress(
+      Math.max(kEff, stages.length - 1),
+      Math.max(kEff, stages.length - 1),
+      `WARNING: ${warns.length} leg(s) cross land in the exact polygon check`
+    );
   }
   progress(
     Math.max(kEff, stages.length - 1),

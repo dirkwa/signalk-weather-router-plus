@@ -30,7 +30,7 @@ export function landMaskFor(st: WorkerState, bbox: BBox, maxCells: number, shape
   const mask = LandMask.fromCoastline(CoastTiles.open(shapefiles, st.cacheRoot), bbox, { resolutionDeg: res });
   st.log(
     'info',
-    `land mask: ${mask.shapes.length} polygons, ${mask.nx}x${mask.ny} cells at ${res}° (${((mask.nx * mask.ny) / 1e6).toFixed(1)}M), ${Date.now() - t} ms`
+    `land mask: ${mask.pieces} coastline pieces drawn, ${mask.nx}x${mask.ny} cells at ${res}° (${((mask.nx * mask.ny) / 1e6).toFixed(1)}M), ${Date.now() - t} ms`
   );
   st.landCache = { key, mask };
   return mask;

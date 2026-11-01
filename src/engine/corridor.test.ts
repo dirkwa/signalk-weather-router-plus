@@ -15,7 +15,11 @@ import {
   widthProfile,
   nearestExactWater,
   waterAround,
+  searchReachM,
+  worldBox,
   CorridorError,
+  CORRIDOR_MARGIN_DEG,
+  WORLD_MAX_WIDTH_DEG,
   type AutoVia,
 } from './corridor';
 import type { ShapePolygon } from '../geo/shapefile';
@@ -296,6 +300,39 @@ test('corridor: a passage the base raster closes is refined locally and verified
   assert.ok(cor.bbox.south <= -6 && cor.bbox.north >= 6);
 });
 
+test("corridor: landFor gets the world and, inside it, the corridor's band", () => {
+  const g = grid();
+  const asked: {
+    box: { west: number; east: number; south: number; north: number };
+    band?: { west: number; east: number; south: number; north: number };
+  }[] = [];
+  const cor = planCorridor(
+    g,
+    [
+      [170, -6],
+      [170, 6],
+    ],
+    {
+      stages: 20,
+      fanHalfDeg: 60,
+      landFor: (b, band) => {
+        asked.push({ box: b, band });
+        return LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.01 });
+      },
+    }
+  );
+  assert.ok(asked.length >= 1);
+  const { box, band } = asked[0];
+  assert.ok(band, 'the band is passed');
+  // The band is the corridor plus the 1° margin; the world is wider by the 60° sweep's reach over 1,330 km, about 10°.
+  assert.ok(band!.west >= 168.9 && band!.east <= 171.1 && band!.south <= -6 && band!.north >= 6, JSON.stringify(band));
+  // Widths the short way round: the world's east edge wraps past 180°.
+  const width = (b: { west: number; east: number }): number => (((b.east - b.west) % 360) + 360) % 360;
+  assert.ok(width(box) > width(band!) + 16 && box.south < band!.south - 8 && box.north > band!.north + 8, JSON.stringify(box));
+  assert.deepEqual(cor.band, band);
+  assert.deepEqual(cor.bbox, box);
+});
+
 test('corridor: a passage closed on the raster even at the finest patch is blocked and routed around', () => {
   const g = buildWaterGrid(COAST2, { region: { west: 160, east: 180, south: -10, north: 10 } });
   // The boom channel at lon 172.5 is open on the grid (the boom is thinner than a fine cell).
@@ -350,7 +387,7 @@ test('corridor: a start on land is a fatal error; a missing water path is a corr
   );
 });
 
-test('width profile: an islet on the skeleton is not a narrow passage; a strait is', () => {
+test('width profile: a strait reads its width, open water is open', () => {
   const m = LandMask.fromCoastline(COAST, { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
   // Along lon 170 through the channel: width ≈ 0.02° · cos(0) · 111 km ≈ 2.2 km.
   const pts = [
@@ -370,6 +407,47 @@ test('width profile: an islet on the skeleton is not a narrow passage; a strait 
   assert.equal(w2[0], Infinity);
 });
 
+/** A rectangle as a decoded polygon (LandMask.fromPolygons). */
+function poly(recordNumber: number, w: number, s: number, e: number, n: number): ShapePolygon {
+  const c = [w, s, e, s, e, n, w, n, w, s];
+  return {
+    recordNumber,
+    minLon: w,
+    minLat: s,
+    maxLon: e,
+    maxLat: n,
+    rings: [{ coords: Float64Array.from(c), minLon: w, minLat: s, maxLon: e, maxLat: n }],
+  };
+}
+
+test('width profile: the water the point sits in, so a channel behind a thin barrier reads the channel, not the sea beyond', () => {
+  const box = { west: 0, south: 0, east: 0.6, north: 0.6 };
+  const m = 1 / 111_195;
+  // A 1 km channel along lat 0.30 east–west: mainland south of it, a barrier of thickness t north of it, open sea
+  // beyond to the box's edge (33 km). Until 2026-11-01 a barrier under about 2 km read as 28–29 km.
+  const pts = Array.from({ length: 11 }, (_v, k) => ({ lon: 0.1 + k * 0.04, lat: 0.3 }));
+  for (const tM of [200, 1000, 4000]) {
+    const land = LandMask.fromPolygons(
+      [poly(1, 0, 0, 0.6, 0.3 - 500 * m), poly(2, 0, 0.3 + 500 * m, 0.6, 0.3 + 500 * m + tM * m)],
+      box,
+      0.001
+    );
+    const w = widthProfile(land, pts);
+    for (const v of w) assert.ok(v > 800 && v < 1300, `barrier ${tM} m: width ${v}`);
+  }
+  // An islet beside the line narrows the lane the point is in to the water on its side of the islet.
+  const islet = LandMask.fromPolygons([poly(1, 0.298, 0.3 + 300 * m, 0.302, 0.3 + 500 * m)], box, 0.001);
+  const wi = widthProfile(islet, [
+    { lon: 0.29, lat: 0.3 },
+    { lon: 0.3, lat: 0.3 },
+    { lon: 0.31, lat: 0.3 },
+  ]);
+  assert.equal(wi[0], Infinity, 'open water before the islet');
+  assert.ok(wi[1] > 30_000 && wi[1] < 30_500, `beside the islet: the 30 km cap to the south plus the 300 m to it (${wi[1]})`);
+  // A point on land reads 0: the corridor treats it as a narrow stretch and re-traces the skeleton into the water.
+  assert.equal(widthProfile(islet, [{ lon: 0.3, lat: 0.3 + 400 * m }])[0], 0);
+});
+
 test('land mask: outside its box is land (nothing was loaded there), so no leg passes over unloaded coast', () => {
   const m = LandMask.fromCoastline(COAST, { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
   // Inside the box, open water and the channel are water.
@@ -383,6 +461,38 @@ test('land mask: outside its box is land (nothing was loaded there), so no leg p
   assert.equal(m.legCrossesLandExact(160, 5.8, 180, 5.8), true); // starts and ends outside
   assert.deepEqual([...m.legsCrossLandBulk([170, 170], [5.8, 5.8], [170, 166], [5.9, 7])], [0, 1]);
   assert.equal(m.clearAlong(170, 5.8, 0, 100_000).m < 50_000, true); // stops at the box edge (6.1°N), ~33 km north
+});
+
+test("worldBox: the search's world is the sweep's reach round the corridor, never under the margin, within the raster's limits", () => {
+  const base = { west: -1, east: 1, south: -1, north: 1 };
+  // A 70 km leg: the 30° fan reaches 35 km, under the 1° margin, so the box is the margin's (a coastal hop keeps its box).
+  assert.ok(Math.abs(searchReachM(70_000, 30) - 35_000) < 1e-6);
+  assert.deepEqual(worldBox(base, 70_000, 30), { west: -2, east: 2, south: -2, north: 2 });
+  // A 1,500 km leg: 750 km of reach at 30°, 6.74° of latitude each side; of longitude, that reach at the poleward
+  // edge the box can reach (7.74°, where a degree is a little shorter than at the equator).
+  const long = worldBox(base, 1_500_000, 30);
+  const reachDeg = 750_000 / 111_194.9;
+  const lonAt = (lat: number): number => reachDeg / Math.cos((lat * Math.PI) / 180);
+  assert.ok(Math.abs(long.west - (-1 - lonAt(1 + reachDeg))) < 0.01 && Math.abs(long.north - (1 + reachDeg)) < 0.01, JSON.stringify(long));
+  // A 60° fan reaches sin 60° of the length; a 90° or wider fan the whole length.
+  assert.ok(Math.abs(searchReachM(1_500_000, 60) - 1_500_000 * Math.sin(Math.PI / 3)) < 1e-6);
+  assert.equal(searchReachM(1_500_000, 120), 1_500_000);
+  // A base that already carries the margin grows only by the rest of the reach (in longitude to within the little
+  // its own poleward edge, 1° further out, adds).
+  const carried = worldBox({ west: -2, east: 2, south: -2, north: 2 }, 1_500_000, 30, CORRIDOR_MARGIN_DEG);
+  assert.ok(Math.abs(carried.north - long.north) < 1e-9 && Math.abs(carried.west - long.west) < 0.02, JSON.stringify([carried, long]));
+  // Longitude widens with the latitude, sized at the poleward edge the reach can fill (67.74° N here, not the base's
+  // middle at 60° N, where a degree of longitude is a quarter longer than at the edge).
+  const north = worldBox({ west: -1, east: 1, south: 59, north: 61 }, 1_500_000, 30);
+  assert.ok(Math.abs(north.west - (-1 - lonAt(61 + reachDeg))) < 0.01, JSON.stringify(north));
+  assert.ok(north.west < -1 - lonAt(60), 'wider than the middle latitude would give');
+  // The raster's limits hold: a 100°-wide base grows at most 10° each side, whatever the reach.
+  const wide = worldBox({ west: -50, east: 50, south: -1, north: 1 }, 20_000_000, 90);
+  assert.ok(Math.abs(wide.west - -60) < 1e-9 && Math.abs(wide.east - 60) < 1e-9, JSON.stringify(wide));
+  assert.equal(Math.round(wide.east - wide.west), WORLD_MAX_WIDTH_DEG);
+  // Across the antimeridian the box stays the short way round.
+  const dateline = worldBox({ west: 178, east: -178, south: -1, north: 1 }, 70_000, 30);
+  assert.deepEqual(dateline, { west: 177, east: -177, south: -2, north: 2 });
 });
 
 test("mergeVias puts each segment's automatic vias before the user via ending it", () => {

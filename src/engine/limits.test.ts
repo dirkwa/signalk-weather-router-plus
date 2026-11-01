@@ -5,8 +5,13 @@ import type { CurrentSource, WindSource } from './environment';
 import { makeVessel } from '../vessel/vessel';
 import { PolarDiagram } from '../vessel/polar';
 import { OceanPropagator, RouteError, ViasNotCrossedError } from './propagator';
-import { RouteRefused } from './refusal';
+import { RouteRefused, refusalText } from './refusal';
+import { forecastNote } from './search/context';
+import { ExperimentalPropagator } from './experimental/propagator';
 import { LandMask } from '../geo/landmask';
+import { limitWarnings } from './smoother';
+import { routeFromMeshPath } from './mesh/leg';
+import type { Route } from './route';
 
 /** Uniform wind and waves everywhere. */
 function wind(speedMs: number, swhM: number): WindSource {
@@ -206,15 +211,26 @@ test('a leg stopped by a foul current says so, and a current above MAX_CURRENT_M
 });
 
 test('when no final leg can be sailed, the error says why for the legs tried and gives the conditions at the nearest candidate', () => {
-  // Open water, route east along lat 0.5; a 5 m/s westward current within
-  // 0.06° of the destination stops every final leg (motor 3 m/s).
+  // Open water, route east along lat 0.5; within 0.06° of the destination a 5 m/s current flows away from it, so
+  // every final leg into it is stopped (motor 3 m/s) whichever side the front comes from (the front widens in open
+  // water: a westward current alone let a branch come at the destination from the south).
   const bbox = { west: -1, south: -1, east: 2, north: 2 };
   const lm = LandMask.fromPolygons([], bbox, 0.02);
   const end: [number, number] = [1.0, 0.5];
   const near = (lon: number, lat: number): boolean => Math.abs(lon - end[0]) < 0.06 && Math.abs(lat - end[1]) < 0.06;
+  const away = (lon: number, lat: number): [number, number] => {
+    if (!near(lon, lat)) return [0, 0];
+    const dx = lon - end[0];
+    const dy = lat - end[1];
+    const l = Math.hypot(dx, dy);
+    return l > 0 ? [(5 * dx) / l, (5 * dy) / l] : [-5, 0];
+  };
   const band: CurrentSource = {
-    at: (lon, lat) => (near(lon, lat) ? [-5, 0] : [0, 0]),
-    atMany: (lons, lats) => ({ u: Float64Array.from(lons, (lon, i) => (near(lon, lats[i]) ? -5 : 0)), v: new Float64Array(lons.length) }),
+    at: (lon, lat) => away(lon, lat),
+    atMany: (lons, lats) => ({
+      u: Float64Array.from(lons, (lon, i) => away(lon, lats[i])[0]),
+      v: Float64Array.from(lons, (lon, i) => away(lon, lats[i])[1]),
+    }),
   };
   const prop = new OceanPropagator(lm, { stages: 10, subsectors: 20, headings: 30 });
   assert.throws(
@@ -237,6 +253,183 @@ test('when no final leg can be sailed, the error says why for the legs tried and
         err.message,
         /at the nearest \([\d.]+ km out, 2026-10-01 \d\d:\d\d UTC\): final leg bearing \d+°, wind 10\.0 m\/s from 180°, current 0\.00 m\/s towards 0°/
       ); // the band is only around the destination
+      return true;
+    }
+  );
+});
+
+test('avoid: a leg over a limit set to avoid is allowed, its time over counting (1 + strength) in the penalty, once for both limits', () => {
+  const blocked = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(20, 3), still, { ...base, maxWindMs: 15, maxSwhM: 2 });
+  assert.equal(blocked.seconds, Infinity, 'block, the default, is unchanged');
+  const free = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(20, 3), still, base);
+  const avoid = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(20, 3), still, {
+    ...base,
+    maxWindMs: 15,
+    maxSwhM: 2,
+    maxWindMode: 'avoid',
+    maxSwhMode: 'avoid',
+    limitAvoidStrength: 2,
+  });
+  assert.ok(Math.abs(avoid.seconds - free.seconds) < 1e-9, 'the real time is unchanged');
+  assert.ok(Math.abs(avoid.penaltySeconds - 2 * avoid.seconds) < 1e-6, 'over both limits, charged once at strength 2');
+  assert.ok(Math.abs(avoid.overWindSeconds - avoid.seconds) < 1e-9);
+  assert.ok(Math.abs(avoid.overSwhSeconds - avoid.seconds) < 1e-9);
+  // Default strength 1; one limit avoided while the other blocks still blocks.
+  const one = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(20, 1), still, { ...base, maxWindMs: 15, maxWindMode: 'avoid' });
+  assert.ok(Math.abs(one.penaltySeconds - one.seconds) < 1e-6);
+  assert.equal(one.overSwhSeconds, 0);
+  const mixed = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(20, 3), still, {
+    ...base,
+    maxWindMs: 15,
+    maxSwhM: 2,
+    maxWindMode: 'avoid',
+  });
+  assert.equal(mixed.seconds, Infinity, 'the wave limit still blocks');
+  // Under the limits: nothing over, no surcharge.
+  const calm = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(10, 1), still, { ...base, maxWindMs: 15, maxWindMode: 'avoid' });
+  assert.equal(calm.penaltySeconds, 0);
+  assert.equal(calm.overWindSeconds, 0);
+});
+
+test('avoid: the search goes round water over a limit when the surcharge exceeds the detour, through it when the detour costs more or no way round exists', () => {
+  // Open water; a band over the wind limit across the direct line east (lon 0.4 to 0.6). Motor 3 m/s. One search:
+  // the surcharge is in each candidate's cost, and the heading sweep aims parallel to the skeleton in open water
+  // (zones.ts), so the front widens one step's lateral reach a stage and the branch round the band survives in
+  // its own bin (measured on brain, 2026-10-30: through the band about 7,400 s over it, the way round about 570 s
+  // longer).
+  const bbox = { west: -1, south: -2, east: 2, north: 2 };
+  const lm = LandMask.fromPolygons([], bbox, 0.02);
+  const banded = (halfLat: number): WindSource => {
+    const over = (lon: number, lat: number): boolean => lon > 0.4 && lon < 0.6 && Math.abs(lat) < halfLat;
+    return {
+      at: (lon: number, lat: number) => [over(lon, lat) ? 20 : 8, 0],
+      atMany: (lons, lats) => ({
+        speed: Float64Array.from(lons, (lon, i) => (over(lon, lats[i]) ? 20 : 8)),
+        dir: new Float64Array(lons.length),
+      }),
+      hasWaves: false,
+      wavesAt: () => null,
+    };
+  };
+  const prop = new OceanPropagator(lm, { stages: 10, subsectors: 20, headings: 30 });
+  const run = (halfLat: number, strength: number): Route =>
+    prop.computeRoute({
+      start: [0, 0],
+      end: [1, 0],
+      departureTime: t0,
+      vessel,
+      polar: null,
+      wind: banded(halfLat),
+      modePolicy: 'motor',
+      sailThreshMs: 0,
+      maxWindMs: 15,
+      maxWindMode: 'avoid',
+      limitAvoidStrength: strength,
+    });
+  const maxLat = (r: Route): number => Math.max(...r.waypoints.map(w => Math.abs(w.lat)));
+  assert.ok(maxLat(run(0.06, 1)) > 0.06, 'strength 1: the surcharge exceeds the detour, round');
+  assert.ok(maxLat(run(0.06, 0.05)) < 0.01, 'strength 0.05: the surcharge (about 370 s) is less than the detour, through');
+  assert.ok(maxLat(run(0.06, 0)) < 0.01, 'strength 0: through');
+  // A band wider than the front can get round in the stages before it: through, whatever the strength.
+  assert.ok(maxLat(run(0.6, 10)) < 0.01);
+});
+
+test("limitWarnings: a leg over a limit gets a warning with the seconds over, block or avoid; the search's own limit warnings are replaced", () => {
+  const t1 = new Date(t0.getTime() + 3600_000);
+  const route: Route = {
+    waypoints: [
+      { lon: 0, lat: 0, time: t0, sogMs: 3, cogDeg: 90, mode: 'motoring' },
+      { lon: 0.01, lat: 0, time: t1, sogMs: 3, cogDeg: 90, mode: 'motoring' },
+    ],
+    totalTimeS: 3600,
+    totalDistanceM: 1113,
+    motoringTimeS: 3600,
+    sailingTimeS: 0,
+    validated: true,
+    warnings: [{ leg_index: 0, violation: 'waves_over_limit', from: [0, 0], to: [0.01, 0], repaired: false }],
+  };
+  const env = { vessel, polar: null, wind: wind(20, 3), current: still };
+  const check = (what: string): void => {
+    const w = route.warnings ?? [];
+    assert.deepEqual(w.map(x => x.violation).sort(), ['waves_over_limit', 'wind_over_limit'], `${what}: both limits, once each`);
+    assert.ok(
+      w.every(x => x.leg_index === 0 && Number(x.detail) > 0),
+      `${what}: the seconds over, on the leg`
+    );
+  };
+  limitWarnings(route, { ...env, sim: { ...base, maxWindMs: 15, maxSwhM: 2 } });
+  check('block');
+  limitWarnings(route, { ...env, sim: { ...base, maxWindMs: 15, maxSwhM: 2, maxWindMode: 'avoid', maxSwhMode: 'avoid' } });
+  check('avoid');
+  // Under the limits: no warning; a limit not set is not judged.
+  limitWarnings(route, { ...env, wind: wind(10, 1), sim: { ...base, maxWindMs: 15, maxSwhM: 2 } });
+  assert.equal(route.warnings?.length ?? 0, 0, 'under the limits: none');
+  limitWarnings(route, { ...env, sim: { ...base, maxSwhM: 2 } });
+  assert.deepEqual(
+    (route.warnings ?? []).map(w => w.violation),
+    ['waves_over_limit']
+  );
+});
+
+test('a walk along the mesh route stopped by a limit set to block says so, not the current', () => {
+  const stuck: { reason?: 'limited' | 'no_go' | 'current' | 'no_speed' } = {};
+  const r = routeFromMeshPath(
+    [
+      [0, 0],
+      [0.01, 0],
+    ],
+    t0,
+    vessel,
+    null,
+    wind(20, 1),
+    still,
+    { ...base, maxWindMs: 15 },
+    stuck
+  );
+  assert.equal(r, null);
+  assert.equal(stuck.reason, 'limited');
+});
+
+test('a front stopped by land alone is told to find open water, not another departure, and is not offered a longer forecast', () => {
+  const land = refusalText({ kind: 'mixed', at: 'front', atMs: t0.getTime(), reasons: ['land'] });
+  assert.match(land, /Add a waypoint in open water round the land, or move a point that is close to the shore into open water\./);
+  assert.doesNotMatch(land, /departure/);
+  const mixed = refusalText({ kind: 'mixed', at: 'front', atMs: t0.getTime(), reasons: ['land', 'limit'] });
+  assert.match(mixed, /Add a waypoint or choose another departure\./);
+  const ctx = (lastTry: { tried: number; land: number; limited: number; noGo: number; stuck: number }) =>
+    ({ args: { forecastEndMs: t0.getTime() }, lastTry: { ...lastTry, latestMs: t0.getTime() + 100 * 3600_000 } }) as unknown as Parameters<
+      typeof forecastNote
+    >[0];
+  assert.equal(forecastNote(ctx({ tried: 600, land: 480, limited: 0, noGo: 0, stuck: 0 })), '', 'land alone: no forecast note');
+  assert.match(forecastNote(ctx({ tried: 600, land: 300, limited: 0, noGo: 200, stuck: 0 })), /longer forecast horizon/);
+});
+
+test('a laid-out leg stopped by a limit set to block says so and advises the limit, not motoring', () => {
+  const polar = new PolarDiagram([45, 90, 135], [4, 12], [3, 4, 4, 5, 3.5, 4.5]);
+  const lm = LandMask.fromPolygons([], { west: -1, south: -1, east: 2, north: 2 }, 0.02);
+  const lay = new ExperimentalPropagator(lm, { stages: 8, subsectors: 20, headings: 30 });
+  assert.throws(
+    () =>
+      lay.sailPolyline(
+        [
+          [0, 0],
+          [0.05, 0],
+        ],
+        t0,
+        {
+          vessel,
+          polar,
+          wind: wind(20, 1),
+          current: still,
+          sim: { modePolicy: 'sail_max', sailThreshMs: 0.1, simStepM: 200, maxWindMs: 15 },
+          who: 'test',
+          advice: 'raise Min sail speed',
+        }
+      ),
+    (err: Error) => {
+      assert.match(err.message, /over the wind or wave limit/);
+      assert.match(err.message, /raise the limit, set it to Avoid, or change the departure/);
+      assert.doesNotMatch(err.message, /Min sail speed/);
       return true;
     }
   );

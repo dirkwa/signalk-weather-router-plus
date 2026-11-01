@@ -11,12 +11,12 @@
  * get their wind, waves and current sampled again at the new time.
  */
 
-import { haversineDistanceM } from '../geo/geodesy';
+import { haversineBearing, haversineDistanceM } from '../geo/geodesy';
 import { M_PER_DEG } from '../geo/units';
 import type { LandTest } from '../geo/landmask';
 import type { CurrentSource, WindSource } from './environment';
-import { simulateLegTime, type SimOptions } from './legsim';
-import type { Route, Waypoint } from './route';
+import { limitAvoidActive, simulateLegTime, tackChargeS, type LegArrival, type SimOptions } from './legsim';
+import { arrivalInto, type Route, type Waypoint } from './route';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
 
@@ -96,6 +96,8 @@ export interface SmootherArgs {
   sim: SimOptions;
   /** A shortcut may take at most this much longer than the legs it replaces, as a ratio (0.05 = 5 %). */
   tolerance: number;
+  /** How the boat arrives at the route's first waypoint (the leg before's last move); null or absent at the route's start. */
+  arriving?: LegArrival | null;
 }
 
 /**
@@ -112,11 +114,11 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   const tol = 1 + a.tolerance;
   let drops = 0;
   let anchor = wps.length - 1;
-  // With a comfort weight the shortcut is judged on time plus comfort cost,
-  // as the search chose the legs, so it never cuts back through the rough
-  // water the search went round. legPenalty[k]: the comfort cost of the leg
-  // into waypoint k.
-  const comfort = (a.sim.comfortWeight ?? 0) > 0;
+  // With a comfort weight, or a limit set to avoid, the shortcut is judged on
+  // time plus that cost, as the search chose the legs, so it never cuts back
+  // through the rough water, or the water over a limit, the search went
+  // round. legPenalty[k]: the cost of the leg into waypoint k.
+  const comfort = (a.sim.comfortWeight ?? 0) > 0 || limitAvoidActive(a.sim);
   const legPenalty = new Float64Array(wps.length);
   if (comfort) {
     for (let k = 1; k < wps.length; k++) {
@@ -146,10 +148,26 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       }
       const sim = simulateLegTime(A.lon, A.lat, A.time, C.lon, C.lat, a.vessel, a.polar, a.wind, a.current, a.sim);
       const origS = (C.time.getTime() - A.time.getTime()) / 1000;
+      // The shortcut's tack penalty against the course into A (legsim.ts tackChargeS), as the legs it replaces paid
+      // theirs: the shortcut's time is the leg's time plus it.
+      const shortcut: LegArrival = {
+        cogDeg: haversineBearing(A.lon, A.lat, C.lon, C.lat),
+        mode: sim.dominantMode === 'sailing' ? 'sailing' : 'motoring',
+      };
+      const chargeS = Number.isFinite(sim.seconds)
+        ? tackChargeS(
+            examined >= 1 ? arrivalInto(wps[examined - 1], A) : (a.arriving ?? null),
+            a.wind.at(A.lon, A.lat, A.time)[1],
+            shortcut.cogDeg,
+            shortcut.mode === 'sailing',
+            a.sim
+          )
+        : 0;
+      const newS = sim.seconds + chargeS;
       // The time tolerance holds on elapsed time; with a comfort weight the
       // shortcut must also not cost more in time plus comfort.
-      const tooSlow = sim.seconds > tol * origS;
-      const tooRough = comfort && sim.seconds + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
+      const tooSlow = newS > tol * origS;
+      const tooRough = comfort && newS + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
       if (!Number.isFinite(sim.seconds) || tooSlow || tooRough) {
         failedAt = examined;
         break;
@@ -162,11 +180,23 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
           break;
         }
       }
-      // Accept: re-time C and shift everything after it by the same amount.
-      const shiftMs = A.time.getTime() + sim.seconds * 1000 - C.time.getTime();
-      for (let k = anchor; k < wps.length; k++) wps[k].time = new Date(wps[k].time.getTime() + shiftMs);
-      C.mode = sim.dominantMode === 'sailing' ? 'sailing' : 'motoring';
-      C.arrivingSplit = [sim.sailingSeconds, sim.motoringSeconds];
+      // Accept: re-time C and shift everything after it by the same amount, plus the change in the next leg's tack
+      // penalty: C is now arrived at on the shortcut's course, so the leg out of C may owe one it did not, or no
+      // longer owe the one it did (both read with the wind at C, at its old and its new time).
+      const shiftMs = A.time.getTime() + newS * 1000 - C.time.getTime();
+      let nextMs = 0;
+      const next = wps[anchor + 1];
+      if (next) {
+        const hop = haversineBearing(C.lon, C.lat, next.lon, next.lat);
+        const sailing = next.mode === 'sailing';
+        const was = tackChargeS(arrivalInto(wps[anchor - 1], C), a.wind.at(C.lon, C.lat, C.time)[1], hop, sailing, a.sim);
+        const now = tackChargeS(shortcut, a.wind.at(C.lon, C.lat, new Date(C.time.getTime() + shiftMs))[1], hop, sailing, a.sim);
+        nextMs = (now - was) * 1000;
+      }
+      C.time = new Date(C.time.getTime() + shiftMs);
+      for (let k = anchor + 1; k < wps.length; k++) wps[k].time = new Date(wps[k].time.getTime() + shiftMs + nextMs);
+      C.mode = shortcut.mode;
+      C.arrivingSplit = [sim.sailingSeconds + chargeS, sim.motoringSeconds];
       drops += anchor - examined - 1;
       if (comfort) {
         // The new leg A→C carries the shortcut's comfort cost; the legs it replaced go.
@@ -232,6 +262,39 @@ export function revalidateLand(route: Route, land: LandTest): void {
     if (land.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat)) {
       warns.push({ leg_index: i, violation: 'leg_crosses_land', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
     }
+  }
+  route.warnings = warns.length ? warns : undefined;
+}
+
+/**
+ * The legs of the final route that spend time over a wind or wave limit, as warnings on the route: each leg timed
+ * again from its start waypoint's time, the sub-steps over the limit counted along the whole leg (`detail`: those
+ * seconds). Worked out on the route as it stands after the search, the layout, simplification, the land check and
+ * any bridge wait, so the warnings are neither dropped by simplification nor numbered against the search's points,
+ * and a leg re-timed after the search (a polish move, a wait shifting the legs after it into other conditions) is
+ * judged as it now stands. Block and avoid alike: under block the time over is normally 0 (the search let nothing
+ * through), so a warning there is real. Earlier limit warnings on the route are replaced.
+ */
+export function limitWarnings(
+  route: Route,
+  env: { vessel: VesselParams; polar: PolarDiagram | null; wind: WindSource; current: CurrentSource; sim: SimOptions }
+): void {
+  const s = env.sim;
+  if (s.maxWindMs === undefined && s.maxSwhM === undefined) return;
+  // Counted, not stopped: a limit set to block stops the simulator at its first step over, which says nothing about
+  // how long the leg is over; the count treats both limits as avoid (the surcharge it then adds is not read).
+  const count: SimOptions = { ...s, maxWindMode: 'avoid', maxSwhMode: 'avoid' };
+  const warns: NonNullable<Route['warnings']> = (route.warnings ?? []).filter(
+    w => w.violation !== 'wind_over_limit' && w.violation !== 'waves_over_limit'
+  );
+  const wps = route.waypoints;
+  for (let i = 0; i + 1 < wps.length; i++) {
+    const a = wps[i];
+    const b = wps[i + 1];
+    const r = simulateLegTime(a.lon, a.lat, a.time, b.lon, b.lat, env.vessel, env.polar, env.wind, env.current, count);
+    const at = { leg_index: i, from: [a.lon, a.lat] as [number, number], to: [b.lon, b.lat] as [number, number], repaired: false };
+    if (r.overWindSeconds > 0) warns.push({ ...at, violation: 'wind_over_limit', detail: String(Math.round(r.overWindSeconds)) });
+    if (r.overSwhSeconds > 0) warns.push({ ...at, violation: 'waves_over_limit', detail: String(Math.round(r.overSwhSeconds)) });
   }
   route.warnings = warns.length ? warns : undefined;
 }

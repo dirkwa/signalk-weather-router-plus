@@ -4,8 +4,9 @@
  *
  * Decoding every piece into objects for a whole-world map view grew V8's young generation and the allocator's heap,
  * and Signal K's process kept that: +381 MB after one zoomed-out view, against +18 MB drawn from the bytes, the
- * rasters identical (brain, 2026-10-26, ~/memdiag/coastcut). Routes and the point test still decode their pieces
- * (CoastTiles.forEach): they need the polygons for the exact tests, and read a corridor, not the world.
+ * rasters identical (brain, 2026-10-26, ~/memdiag/coastcut). Since 2026-11-01 a route's land mask is drawn this way
+ * too (LandMask.fromCoastline): its exact tests read the tiles they touch instead of keeping the world's pieces
+ * (docs/plans/land-mask-from-tiles.md).
  *
  * The arithmetic is LandMask.rasterizeShape's, fillShape's and markEdgeCells's, step for step, so the raster is the
  * one LandMask.rasterStreamed makes from the decoded pieces (landcache.test.ts compares them).
@@ -14,7 +15,7 @@
 import type { BBox } from './geodesy';
 import { bboxHeight, bboxWidth, lonOffsetFromWest } from './geodesy';
 import { unwrapLonNear } from './angles';
-import { LandMask, type RasterStreamOptions } from './landmask';
+import type { RasterStreamOptions } from './landmask';
 import type { CoastTiles } from './coasttiles';
 
 /** Per ring of the piece being drawn: where its points start in `xsScratch`, its vertex count, and where its parts are in the bytes. */
@@ -132,15 +133,16 @@ function wholeIn(u32: Uint32Array, r: number, j: number): number {
 
 /**
  * The land raster of `bbox` at `res` from the coastline's tiles, as LandMask.rasterStreamed makes it from the same
- * pieces: conservative (every cell a coastline edge passes through is land) unless `edgeCells` is false. A raster
- * only (no polygons). `pieces`: how many pieces were drawn (per pass).
+ * pieces: conservative (every cell a coastline edge passes through is land) unless `edgeCells` is false. The bytes
+ * and their dimensions only (LandMask.fromTiles and LandMask.fromCoastline wrap them). `pieces`: how many pieces
+ * were drawn (per pass).
  */
-export function rasterFromTiles(
+export function drawRasterFromTiles(
   coast: CoastTiles,
   bbox: BBox,
   res: number,
   opts: RasterStreamOptions = {}
-): { mask: LandMask; pieces: number } {
+): { raster: Uint8Array; nx: number; ny: number; pieces: number } {
   const nx = opts.nx ?? Math.max(1, Math.ceil(bboxWidth(bbox) / res));
   const ny = opts.ny ?? Math.max(1, Math.ceil(bboxHeight(bbox) / res));
   const raster = new Uint8Array(nx * ny);
@@ -319,5 +321,5 @@ export function rasterFromTiles(
       }
     });
   }
-  return { mask: LandMask.fromRaster({ bbox, resolutionDeg: res, raster }, { nx, ny }), pieces };
+  return { raster, nx, ny, pieces };
 }

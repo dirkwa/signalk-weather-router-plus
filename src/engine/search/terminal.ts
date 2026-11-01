@@ -9,11 +9,13 @@
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../../geo/geodesy';
 import { norm360, twaFromHeading } from '../../geo/angles';
-import { DEG, NM_M } from '../../geo/units';
+import { DEG, M_PER_DEG, NM_M } from '../../geo/units';
 import type { CurrentSource, WindSource } from '../environment';
-import { simulateLegTime, type LegSimResult, type ModePolicy, type SimOptions, DEFAULT_TACK_PENALTY_S } from '../legsim';
+import { simulateLegTime, tackChargeS, type LegSimResult, type ModePolicy, type SimOptions } from '../legsim';
 import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
+import { cellOf, LandMask, type CellMask } from '../../geo/landmask';
+import { waterFieldOver } from '../mesh/waters';
 import { forecastNote, tryNote } from './context';
 import { RouteError, TERMINAL_EVAL, ViasNotCrossedError, type Candidate, type SearchContext } from './types';
 import type { SkeletonGuide } from './zones';
@@ -25,22 +27,231 @@ export interface Terminal {
   tackCand: Candidate | null;
   /** The end of the final leg (null when the leg ends at bestC, inside the arrival circle). */
   finalCand: Candidate | null;
+  /** The final approach along the water path (waterApproach), after bestC, ending at the end; tackCand and finalCand are then null. */
+  approach?: Candidate[];
 }
 
-/** The candidate at the end of a simulated straight hop from `from` to (lon, lat). */
-function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResult): Candidate {
+/**
+ * The last part of an open stretch that ends where the leg joins a chart mesh (`args.endApproach` 'water'), when no
+ * clear straight final leg reaches that point: the shortest path over water to it on the search's own raster (the
+ * coastline land as the search sees it, the meshes' water among it), from the front's candidate with the least cost
+ * so far plus the path's length at cruise speed (the bin cost's measure, search/stages.ts, with the water path in
+ * place of the straight remaining distance). The path is walked down the distance field cell by cell, cut to the
+ * fewest straight moves the search's own land test lets through, and each move timed under the search's rules. Null
+ * when the water does not reach the front, or a move cannot be made: the caller fails as it would have.
+ */
+function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Candidate; stageOfBest: number; approach: Candidate[] } | null {
+  const { landMask, eLon, eLat, cruise, vessel, polar, wind, current, simOpts, progress } = ctx;
+  let stageOfBest = stages.length - 1;
+  while (stageOfBest > 0 && stages[stageOfBest].length === 0) stageOfBest--;
+  const front = stages[stageOfBest].filter(c => c.viaCount === ctx.nVias);
+  if (!front.length) return null;
+  // The coastline raster (a view of it with the meshes' water as land, pipeline.ts); a search on other land (a mesh
+  // stretch's, mesh/legrun.ts) has no raster to walk.
+  if (!(landMask instanceof LandMask)) return null;
+  const r = landMask.resolutionDeg;
+  // The raster's grid, for cellOf (which reads no cells).
+  const grid: CellMask = { nx: landMask.nx, ny: landMask.ny, resolutionDeg: r, bbox: landMask.bbox, cells: new Uint8Array(0) };
+  const endCell = cellOf(grid, eLon, eLat);
+  if (endCell < 0) return null;
+  const frontCells = front.map(c => cellOf(grid, c.lon, c.lat));
+  // The field over a window of the raster round the front and the end, not the whole raster (4 bytes a cell: the
+  // search's world can be 25 M cells; PR #91 review): the window is the box of their cells padded by `padM` on each
+  // side, first one stage step. The answer is exact when the best candidate's distance by water is at most the pad:
+  // any path leaving the window runs at least the pad out and back, so none outside is shorter. Otherwise the pad
+  // doubles and the field is walked again, up to the whole raster.
+  const walk = (padM: number): { w: Window; field: Float32Array; bestC: Candidate | null; bestM: number } | null => {
+    const w = windowOf(grid, [endCell, ...frontCells.filter(c => c >= 0)], padM);
+    const field = waterFieldOver(
+      w.grid,
+      c => {
+        const [lon, lat] = w.centre(c);
+        return !landMask.isLand(lon, lat);
+      },
+      w.local(endCell)
+    );
+    if (!field) return null;
+    let bestC: Candidate | null = null;
+    let bestCost = Infinity;
+    let bestM = Infinity;
+    front.forEach((c, k) => {
+      const cell = frontCells[k];
+      const d = cell >= 0 ? field[w.local(cell)] : Infinity;
+      if (!Number.isFinite(d)) return;
+      const cost = c.costS + d / cruise;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestM = d;
+        bestC = c;
+      }
+    });
+    return { w, field, bestC, bestM };
+  };
+  let padM = ctx.budget.candStepM;
+  let got = walk(padM);
+  while (got && !(got.bestC && got.bestM <= padM) && !got.w.whole) {
+    padM *= 2;
+    got = walk(padM);
+  }
+  if (!got || !got.bestC) return null;
+  const { w, field } = got;
+  const bestC: Candidate = got.bestC;
+  const { nx, ny } = w.grid;
+  const free = (c: number): boolean => {
+    const [lon, lat] = w.centre(c);
+    return !landMask.isLand(lon, lat);
+  };
+  // Down the field to the end: the neighbour nearest it by water at each step (the field's own moves).
+  const cells: number[] = [];
+  const endLocal = w.local(endCell);
+  let cur = w.local(cellOf(grid, bestC.lon, bestC.lat));
+  while (cur !== endLocal) {
+    const i = cur % nx;
+    const j = Math.floor(cur / nx);
+    let next = -1;
+    for (let dj = -1; dj <= 1; dj++)
+      for (let di = -1; di <= 1; di++) {
+        if (di === 0 && dj === 0) continue;
+        const ii = i + di;
+        const jj = j + dj;
+        if (ii < 0 || ii >= nx || jj < 0 || jj >= ny) continue;
+        const n = jj * nx + ii;
+        // The field's own moves only: water, and a diagonal where both cells beside it are water (waterFieldOver), so
+        // the walk never slips between two land cells touching at a corner (PR #91 review).
+        // The end's own cell is the field's source, passable whatever it is.
+        if ((n !== endLocal && !free(n)) || (di !== 0 && dj !== 0 && (!free(j * nx + ii) || !free(jj * nx + i)))) continue;
+        if (next < 0 || field[n] < field[next]) next = n;
+      }
+    if (next < 0 || !(field[next] < field[cur])) return null;
+    cur = next;
+    if (cur !== endLocal) cells.push(cur);
+  }
+  const path: [number, number][] = [[bestC.lon, bestC.lat], ...cells.map(c => w.centre(c)), [eLon, eLat]];
+  // The fewest straight moves: from each point, the farthest one ahead whose move is clear.
+  const pts: [number, number][] = [path[0]];
+  let k = 0;
+  const crosses = (a: [number, number], b: [number, number]): boolean =>
+    landMask.legsCrossLandBulk(Float64Array.of(a[0]), Float64Array.of(a[1]), Float64Array.of(b[0]), Float64Array.of(b[1]))[0] !== 0;
+  while (k < path.length - 1) {
+    // One cell on, unless that move crosses land too: then the water path is no way (the search fails as it would have).
+    if (crosses(path[k], path[k + 1])) return null;
+    let far = k + 1;
+    for (let q = path.length - 1; q > k + 1; q--) {
+      const hit = landMask.legsCrossLandBulk(
+        Float64Array.of(path[k][0]),
+        Float64Array.of(path[k][1]),
+        Float64Array.of(path[q][0]),
+        Float64Array.of(path[q][1])
+      );
+      if (!hit[0]) {
+        far = q;
+        break;
+      }
+    }
+    pts.push(path[far]);
+    k = far;
+  }
+  const approach: Candidate[] = [];
+  let from = bestC;
+  let lengthM = 0;
+  for (let q = 1; q < pts.length; q++) {
+    const [lon, lat] = pts[q];
+    const sim = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), lon, lat, vessel, polar, wind, current, simOpts);
+    if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) return null;
+    lengthM += haversineDistanceM(from.lon, from.lat, lon, lat);
+    from = hopCandidate(from, lon, lat, sim, hopCharge(ctx, from, lon, lat, sim));
+    approach.push(from);
+  }
+  progress(
+    stages.length - 1,
+    stages.length - 1,
+    `final approach along the water path to where the leg joins the charts: {distance:${Math.round(lengthM)}} in ${approach.length} move(s), no clear straight final leg`
+  );
+  return { bestC, stageOfBest, approach };
+}
+
+/** A window of a raster's cells: its own grid, and the mapping of a cell of the whole raster to the window and back. */
+interface Window {
+  grid: CellMask;
+  /** The window is the whole raster. */
+  whole: boolean;
+  /** The window's cell index of a raster cell (which must lie in the window). */
+  local(c: number): number;
+  /** Centre of a window cell, degrees. */
+  centre(c: number): [number, number];
+}
+
+/** The window of `grid` round the given cells, padded by `padM` metres each way (east-west at the box's widest latitude), clipped to the raster. */
+function windowOf(grid: CellMask, cells: number[], padM: number): Window {
+  const { nx, ny, resolutionDeg: r } = grid;
+  let i0 = Infinity;
+  let i1 = -Infinity;
+  let j0 = Infinity;
+  let j1 = -Infinity;
+  for (const c of cells) {
+    const i = c % nx;
+    const j = (c - i) / nx;
+    i0 = Math.min(i0, i);
+    i1 = Math.max(i1, i);
+    j0 = Math.min(j0, j);
+    j1 = Math.max(j1, j);
+  }
+  const padJ = Math.ceil(padM / (r * M_PER_DEG));
+  const latEdge = Math.max(Math.abs(grid.bbox.south + j0 * r), Math.abs(grid.bbox.south + (j1 + 1) * r));
+  const padI = Math.ceil(padM / (r * M_PER_DEG * Math.max(0.05, Math.cos(latEdge * DEG))));
+  const ia = Math.max(0, i0 - padI);
+  const ib = Math.min(nx - 1, i1 + padI);
+  const ja = Math.max(0, j0 - padJ);
+  const jb = Math.min(ny - 1, j1 + padJ);
+  const wnx = ib - ia + 1;
+  const wny = jb - ja + 1;
+  const west = grid.bbox.west + ia * r;
+  const south = grid.bbox.south + ja * r;
+  return {
+    grid: {
+      nx: wnx,
+      ny: wny,
+      resolutionDeg: r,
+      bbox: { west, south, east: west + wnx * r, north: south + wny * r },
+      cells: new Uint8Array(0),
+    },
+    whole: ia === 0 && ja === 0 && ib === nx - 1 && jb === ny - 1,
+    local: c => {
+      const i = c % nx;
+      return ((c - i) / nx - ja) * wnx + (i - ia);
+    },
+    centre: c => {
+      const i = c % wnx;
+      return [west + (i + 0.5) * r, south + ((c - i) / wnx + 0.5) * r];
+    },
+  };
+}
+
+/**
+ * The tack penalty a straight hop from `from` to (lon, lat) owes (legsim.ts tackChargeS): the wind where the hop
+ * starts, `from`'s course and mode against the hop's. The same rule as the stage sweep (propose.ts), so a final hop,
+ * a beat's legs and the water approach pay for a tack as every other move does.
+ */
+function hopCharge(ctx: SearchContext, from: Candidate, lon: number, lat: number, sim: LegSimResult): number {
+  const [, wd] = ctx.wind.at(from.lon, from.lat, new Date(from.timeMs));
+  return tackChargeS(from, wd, haversineBearing(from.lon, from.lat, lon, lat), sim.dominantMode === 'sailing', ctx.simOpts);
+}
+
+/** The candidate at the end of a simulated straight hop from `from` to (lon, lat), `chargeS` of tack penalty added (time, cost and sailing seconds). */
+function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResult, chargeS: number): Candidate {
   const d = haversineDistanceM(from.lon, from.lat, lon, lat);
+  const secs = sim.seconds + chargeS;
   return {
     lon,
     lat,
-    timeMs: from.timeMs + sim.seconds * 1000,
-    elapsedS: from.elapsedS + sim.seconds,
-    costS: from.costS + sim.seconds + sim.penaltySeconds,
+    timeMs: from.timeMs + secs * 1000,
+    elapsedS: from.elapsedS + secs,
+    costS: from.costS + secs + sim.penaltySeconds,
     parentIdx: -1,
-    sogMs: d / sim.seconds,
+    sogMs: d / secs,
     cogDeg: haversineBearing(from.lon, from.lat, lon, lat),
     mode: sim.dominantMode === 'sailing' ? 'sailing' : 'motoring',
-    sailingS: sim.sailingSeconds,
+    sailingS: sim.sailingSeconds + chargeS,
     motoringS: sim.motoringSeconds,
     viaCount: from.viaCount,
     viaIdxs: [],
@@ -111,18 +322,15 @@ export function beatToWindward(
       if (cross[0] || cross[1]) continue;
       const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(s1.seconds) || s1.seconds <= 0) continue;
-      const tack = hopCandidate(from, tLon, tLat, s1);
-      // The beat's one tack costs the penalty, in time and in cost.
-      const tackS = simOpts.tackPenaltyS ?? DEFAULT_TACK_PENALTY_S;
-      tack.timeMs += tackS * 1000;
-      tack.elapsedS += tackS;
-      tack.costS += tackS;
-      tack.sailingS += tackS; // time spent sailing: the totals must add up
+      // Each leg of the beat pays for its tack by the one rule (hopCharge): the first against the course the branch
+      // arrived on (so the order that keeps the boat on its tack is cheaper), the second against the first.
+      const tack = hopCandidate(from, tLon, tLat, s1, hopCharge(ctx, from, tLon, tLat, s1));
       const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
-      // Time plus comfort cost: with a comfort weight the beat avoids the rougher tack.
-      const total = s1.seconds + s1.penaltySeconds + s2.seconds + s2.penaltySeconds;
-      if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
+      const final = hopCandidate(tack, gLon, gLat, s2, hopCharge(ctx, tack, gLon, gLat, s2));
+      // Time, tack penalties and comfort cost: with a comfort weight the beat avoids the rougher tack.
+      const total = final.costS - from.costS;
+      if (!best || total < best.total) best = { tack, final, d1: o.dFirst, d2: o.dSecond, total };
     }
   }
   return best;
@@ -134,6 +342,12 @@ export const BEAT_MARGINS_DEG = [3, 8, 15, 25, 40];
 export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages: Candidate[][]): Terminal {
   const { args, wind, current, polar, vessel, modePolicy, simOpts, progress, checkCancel, eLon, eLat, snapToExact, nVias, limitNote } = ctx;
   const { kEff } = guide;
+  // The front stalled near an end where the leg joins the charts (stages.ts kept the error): the water path, or that error.
+  if (ctx.stallError) {
+    const w = waterApproach(ctx, stages);
+    if (!w) throw ctx.stallError;
+    return { ...w, tackCand: null, finalCand: null };
+  }
   const terminals = stages[stages.length - 1];
   if (terminals.length === 0) throw new RouteError('front went empty before reaching the destination; no path found');
   const score = (c: Candidate): [number, number] => [haversineDistanceM(c.lon, c.lat, eLon, eLat), c.costS];
@@ -185,7 +399,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   const planFor = (c: Candidate) => {
     const hopEnd = hopEndFor(c);
     // arrivalS: the real arrival (reported); costS: arrival plus comfort cost (compared).
-    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS, costS: c.costS };
+    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, chargeS: 0, arrivalS: c.elapsedS, costS: c.costS };
     if (!snapToExact) {
       const cross = ctx.landMask.legsCrossLandBulk(
         Float64Array.of(c.lon),
@@ -199,13 +413,24 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       }
     }
     const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy);
-    if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS, costS: beat.final.costS };
+    if (beat) return { hopEnd, beat, sim: null, chargeS: 0, arrivalS: beat.final.elapsedS, costS: beat.final.costS };
     const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
     if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) {
       fails.set(c, sim.reason ?? 'no_speed');
       return null;
     }
-    return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds, costS: c.costS + sim.seconds + sim.penaltySeconds };
+    // The straight hop's tack penalty, when it puts the wind on the other side of the boat from the branch's last
+    // course: in the arrival and in the cost the branches are ranked on, so a branch is not chosen for a final tack
+    // it does not pay for.
+    const chargeS = hopCharge(ctx, c, hopEnd[0], hopEnd[1], sim);
+    return {
+      hopEnd,
+      beat: null,
+      sim,
+      chargeS,
+      arrivalS: c.elapsedS + sim.seconds + chargeS,
+      costS: c.costS + sim.seconds + chargeS + sim.penaltySeconds,
+    };
   };
   type FinalPlan = NonNullable<ReturnType<typeof planFor>>;
   const plans = new Map<Candidate, FinalPlan>();
@@ -270,6 +495,10 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       Float64Array.of(hLon),
       Float64Array.of(hLat)
     );
+    if (finalCross[0] && args.endApproach === 'water') {
+      const w = waterApproach(ctx, stages);
+      if (w) return { ...w, tackCand: null, finalCand: null };
+    }
     if (finalCross[0]) {
       throw new RouteError(
         `terminal hop from (${bestC.lat.toFixed(4)}, ${bestC.lon.toFixed(4)}) to the destination crosses land; the propagation got close but the straight final leg is blocked. Try a via point or a closer endpoint.`
@@ -307,7 +536,14 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         );
       }
       const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);
-      if (legDistFinal > 0) finalCand = hopCandidate(bestC, hLon, hLat, simFinal);
+      if (legDistFinal > 0)
+        finalCand = hopCandidate(
+          bestC,
+          hLon,
+          hLat,
+          simFinal,
+          bestPlan && bestPlan.sim ? bestPlan.chargeS : hopCharge(ctx, bestC, hLon, hLat, simFinal)
+        );
     }
   }
   if (!snapToExact) {

@@ -11,7 +11,9 @@ import type { WindSource } from './environment';
 // route detours west into the breeze. Measured: aimed at the skeleton the
 // front never got more than 0.21° off the line; aimed parallel, 1.6°. On
 // Tonga → Auckland the skeleton aim kept the front within 170 km of the
-// direct line while a route 479 km west was 15 h faster.
+// direct line while a route 479 km west was 15 h faster. Since 2026-10-30
+// only water narrow enough to shorten the step keeps the skeleton aim
+// (zones.ts targetForParent), so the control is a corridor 5 km wide.
 const windAt = (lon: number): number => (lon < -0.5 ? 9 : 1.5);
 const wind: WindSource = {
   at: lon => [windAt(lon), 90],
@@ -49,7 +51,7 @@ function run(widthM: number): { route: ReturnType<OceanPropagator['computeRoute'
 
 test('in open water the search can leave the skeleton far enough to find a wide detour', () => {
   const open = run(Infinity);
-  const control = run(1e6); // finite width: parents aim back at the skeleton, as before
+  const control = run(5000); // narrow water (the step shortened by the width): parents aim back at the skeleton
   assert.ok(open.frontWest < -1, `open-water front reached ${open.frontWest.toFixed(2)}°`);
   assert.ok(control.frontWest > -0.5, `skeleton-aimed front reached ${control.frontWest.toFixed(2)}°`);
   assert.ok(Math.min(...open.route.waypoints.map(w => w.lon)) < -0.5, 'the route goes into the breeze');

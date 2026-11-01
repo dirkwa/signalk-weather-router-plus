@@ -1,13 +1,16 @@
 /**
  * One leg on the chart mesh, planned where the mesh is loaded, by the
- * hybrid rule. The mesh route is the skeleton; under motor it is
- * the route; otherwise its narrow passages (both shores within
- * CONSTRAINED_WIDTH_M) are motored along the mesh (sailed when the sail
- * threshold is 0) and each open stretch between them is sailed by the
- * selected router, whose every move is tested against the mesh's blocked
- * triangles (land.ts): charted depth under the draught, clearance under
- * the air draft, hazards, marks, structures, areas to avoid. No copy of
- * the chart, no raster (docs/plans/sailing-search-on-the-mesh.md).
+ * hybrid rule. The mesh route is the skeleton: its narrow passages (both
+ * shores within CONSTRAINED_WIDTH_M) are motored along the mesh (sailed
+ * when the sail threshold is 0) and each open stretch between them is
+ * searched by the selected router under the request's policy, whose every
+ * move is tested against the mesh's blocked triangles (land.ts): charted
+ * depth under the draught, clearance under the air draft, hazards, marks,
+ * structures, areas to avoid. No copy of the chart, no raster
+ * (docs/plans/sailing-search-on-the-mesh.md). Under motor too (until
+ * 2026-10-30 the whole mesh route was walked under motor, so the wind and
+ * wave limits and the comfort weight could warn but never steer there):
+ * the speed under power is the same everywhere, the sea is not.
  *
  * The plugin runs this in the child process that holds the mesh
  * (plugin/meshlegtask.ts); the tests run it in-process on small meshes.
@@ -17,9 +20,9 @@ import { NoWind, type CurrentSource } from '../environment';
 import { ExperimentalPropagator } from '../experimental/propagator';
 import { forecastHorizonNote, type LegWind } from '../horizon';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
-import { recomputePerWaypointMetadata } from '../route';
-import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../smoother';
-import type { ModePolicy, SimOptions } from '../legsim';
+import { recomputePerWaypointMetadata, routeArrival } from '../route';
+import { limitWarnings, rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../smoother';
+import type { LegArrival, LegSimResult, ModePolicy, SimOptions } from '../legsim';
 import type { LegPlan } from '../multileg';
 import { RouteCancelled, type PropagatorOptions } from '../propagator';
 import type { ProgressFn } from '../progress';
@@ -78,6 +81,8 @@ export interface MeshLegInputs {
   bridgeWaitS: number;
   wind: LegWind | null;
   current: CurrentSource;
+  /** How the boat arrives at the leg's start (the leg before's last move); null or absent at the route's start. */
+  arriving?: LegArrival | null;
   progress: ProgressFn;
   shouldCancel: () => boolean;
   onFrontier?: (front: StageFront) => void;
@@ -116,20 +121,16 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     );
   const wind = inp.wind ?? new NoWind();
   const current = inp.current;
-  const motor = inp.sim.modePolicy === 'motor';
   // Sail only: sail_max with a threshold of 0 never motors (legsim.ts), so
   // the narrow passages are sailed along the mesh route too (2026-10-08,
   // the owner's decision); above 0 they are motored.
   const sailOnly = inp.sim.modePolicy === 'sail_max' && inp.sim.sailThreshMs <= 0 && inp.polar !== null;
-  const segs: MeshSegment[] = motor
-    ? [{ type: 'constrained', start: 0, end: res.path.length - 1 }]
-    : classifySegments(res.path, res.widths);
-  if (!motor)
-    progress(
-      0,
-      0,
-      `${tag}chart mesh: ${segs.length} segment(s): ${segs.filter(s => s.type === 'constrained').length} narrow (${sailOnly ? 'sailed along the mesh route, the sail threshold being 0' : 'motored along the mesh route'}), ${segs.filter(s => s.type === 'open').length} open water (isochrone search on the mesh)`
-    );
+  const segs: MeshSegment[] = classifySegments(res.path, res.widths);
+  progress(
+    0,
+    0,
+    `${tag}chart mesh: ${segs.length} segment(s): ${segs.filter(s => s.type === 'constrained').length} narrow (${sailOnly ? 'sailed along the mesh route, the sail threshold being 0' : 'motored along the mesh route'}), ${segs.filter(s => s.type === 'open').length} open water (isochrone search on the mesh)`
+  );
   /**
    * A segment along the mesh route itself, under the request's policy: a
    * narrow passage, an open stretch too short to search, or one whose
@@ -138,9 +139,14 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
    * each tested against the mesh; motor only below a positive threshold);
    * it fails the route when a stretch cannot be sailed, never motors
    * instead (2026-10-08, job 1c1fda5b: a failed search motored 106 km
-   * under a sail threshold of 0). Under fastest the walk picks per step;
-   * narrow passages are motored unless the request is sail only.
+   * under a sail threshold of 0). Under fastest and motor the walk picks
+   * per step; narrow passages are motored unless the request is sail only.
    */
+  // Why the last walk along the mesh route could not be made (routeFromMeshPath), for the refusal's words.
+  const stuck: { reason?: LegSimResult['reason'] } = {};
+  // How the boat arrives at the stretch being planned: the stretch before's last move (the leg before's at the first),
+  // so a first move that puts the wind on the other side pays the tack penalty like every other move.
+  let arriving: LegArrival | null = inp.arriving ?? null;
   const alongMesh = (seg: MeshSegment, pts: [number, number][], at: Date, label: string, lenM: number): Route | null => {
     const sailed = seg.type === 'open' ? inp.sim.modePolicy === 'sail_max' && inp.polar !== null : sailOnly;
     if (sailed) {
@@ -151,6 +157,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
         wind: inp.wind ?? undefined,
         current,
         sim: inp.sim,
+        arriving,
         who: label,
         advice: 'raise Min sail speed so that stretch is motored, or route under motor',
         onProgress: (s: number, tot: number, m: string) => progress(s, tot, `${label}: ${m}`),
@@ -162,9 +169,10 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
       );
       return part;
     }
-    const policy: ModePolicy = seg.type === 'open' && !motor ? inp.sim.modePolicy : 'motor';
-    const part = routeFromMeshPath(pts, at, inp.vessel, inp.polar, wind, current, { ...inp.sim, modePolicy: policy });
-    if (part && !motor)
+    const policy: ModePolicy = seg.type === 'open' ? inp.sim.modePolicy : 'motor';
+    stuck.reason = undefined;
+    const part = routeFromMeshPath(pts, at, inp.vessel, inp.polar, wind, current, { ...inp.sim, modePolicy: policy }, stuck, arriving);
+    if (part)
       progress(
         0,
         0,
@@ -190,7 +198,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     let part: Route | null = null;
     /** Why this open stretch's search failed, when it did: the stretch along the mesh route then carries a warning. */
     let searchFailed: string | null = null;
-    if (seg.type === 'open' && lenM >= MIN_OPEN_SEGMENT_M && !motor) {
+    if (seg.type === 'open' && lenM >= MIN_OPEN_SEGMENT_M) {
       const last = seg.end === res.path.length - 1;
       const prop = makeRouter(inp.router ?? DEFAULT_ROUTER, land, { ...inp.propagator, stages });
       try {
@@ -209,8 +217,12 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
           sailThreshMs: inp.sim.sailThreshMs,
           maxWindMs: inp.sim.maxWindMs,
           maxSwhM: inp.sim.maxSwhM,
+          maxWindMode: inp.sim.maxWindMode,
+          maxSwhMode: inp.sim.maxSwhMode,
+          limitAvoidStrength: inp.sim.limitAvoidStrength,
           comfortWeight: inp.sim.comfortWeight,
           tackPenaltyS: inp.sim.tackPenaltyS,
+          arriving,
           forecastEndMs: inp.wind ? inp.wind.validRange[1].getTime() : undefined,
           simStepM: inp.sim.simStepM,
           arrivalRadiusM: last ? plan.arrivalRadiusM : undefined,
@@ -238,6 +250,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
               current,
               sim: inp.smootherSimStepM === undefined ? inp.sim : { ...inp.sim, simStepM: inp.smootherSimStepM },
               tolerance: inp.smootherTolerance,
+              arriving,
             })
           : 0;
         if (nSm) part.smootherDrops = (part.smootherDrops ?? 0) + nSm;
@@ -265,7 +278,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     }
     if (!part) {
       part = alongMesh(seg, pts, at, label, lenM);
-      if (!part) return { refused: `segment ${si + 1}/${segs.length} of the mesh route cannot be made against the current` };
+      if (!part) return { refused: `segment ${si + 1}/${segs.length} of the mesh route cannot be made: ${stuckText(stuck.reason)}` };
       // On the route too, not only in the log: the stretch along the mesh route can be slower and a run of short tacks
       // (brain, 2026-10-29: 64 points instead of 7), and the page and the chartplotter show the route's warnings.
       if (searchFailed !== null)
@@ -280,6 +293,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     }
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;
+    arriving = routeArrival(part) ?? arriving;
     // The tiles this stretch's search and layout read go; the next stretch reads its own.
     land.release?.();
   }
@@ -350,8 +364,18 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
       );
     }
   }
+  // Legs over a limit set to avoid, on the leg as it now stands (bridge waits included).
+  limitWarnings(route, { vessel: inp.vessel, polar: inp.polar, wind, current, sim: inp.sim });
   const limited = inp.sim.maxWindMs !== undefined || inp.sim.maxSwhM !== undefined;
   forecastHorizonNote(route, inp.wind, limited, tag, progress);
   void legStart;
   return route;
+}
+
+/** The leg simulator's reason a walk along the mesh route stopped, in words for the refusal. */
+function stuckText(reason: LegSimResult['reason']): string {
+  if (reason === 'limited') return 'part of it is over the wind or wave limit (set to block)';
+  if (reason === 'current') return 'against a current stronger than the boat';
+  if (reason === 'no_go') return "part of it lies in the polar's no-go angle";
+  return 'the boat makes no speed on part of it';
 }
