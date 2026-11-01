@@ -1965,10 +1965,10 @@ function _smallScreen() {
 // from where the boat is, and the view saved last time can be anywhere
 // (on a first visit, Block Island Sound). The first Signal K fix centres
 // the map on it, keeping the saved zoom, unless the map has moved since
-// the load (a route fitted into view) or the user has used it before the
-// fix came.
+// the load, a route was fitted into view, or the user has used it before
+// the fix came.
 // A plan restored from the last visit (a start or an end marker) keeps
-// the view instead, where that plan was left (keepStartView; PR #70
+// the view instead, where that plan was left (cancelCentreOnVessel; PR #70
 // review). The page never asks the browser for its location: the
 // vessel's position comes from Signal K.
 //
@@ -1978,7 +1978,7 @@ function _smallScreen() {
 // keep the default view on a first visit (after a restored plan it only
 // writes the saved view back). A zoom is a move: the zoom buttons keep
 // the centre (PR #70 review).
-let _autoCentreOnVessel = true;   // until the first Signal K fix, input on the map, a move, or a restored plan
+let _autoCentreOnVessel = true;   // until the first Signal K fix, input on the map, a move, a route fit, or a restored plan
 const _startCenter = map.getView().getCenter();
 const _startZoom = map.getView().getZoom();
 map.on('moveend', function() {
@@ -2004,16 +2004,19 @@ const _userOnMap = (/** @type {Event} */ e) => {
 };
 map.getViewport().addEventListener('pointerdown', _userOnMap, { passive: true });
 map.getViewport().addEventListener('wheel', _userOnMap, { passive: true });
-// A restored plan keeps the view the page opened on (rp-plan.js
-// _restorePlan): the saved view, where the plan was left, or without one
-// the default view, the only view a plan can have been placed on then
-// (any move, the first fix's centring too, saves the view).
-export function keepStartView() {
+// The map shows what the user works on, so the first fix leaves it there
+// (rp-plan.js): a restored plan keeps the view the page opened on, the
+// saved view where the plan was left, or without one the default view,
+// the only view a plan can have been placed on then (any move, the first
+// fix's centring too, saves the view); a route fitted into view keeps the
+// route, even when the fit ends where the load started and so moves
+// nothing moveend would see (PR #70 review).
+export function cancelCentreOnVessel() {
   _autoCentreOnVessel = false;
 }
 // The first Signal K fix of the load opens the map on the boat (rp-plan.js).
-// Not while the view is animating: something else (a route being fitted)
-// is moving the map already.
+// Not while the view is animating: something else (a warning's jump from
+// the itinerary) is moving the map already.
 export function centreOnVesselOnce(coord) {
   if (!_autoCentreOnVessel) return;
   _autoCentreOnVessel = false;

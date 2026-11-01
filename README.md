@@ -431,13 +431,13 @@ computed with what that request says, not with the user's saved Setup.
   position, at the zoom the map was left at (11 on a first visit),
   unless it restores a plan (below): then it opens where that plan was
   left. A map used before the position comes (panned, zoomed, clicked, a
-  pin dragged) stays as it is (the page never asks the browser for its
-  location). The route summary (distance, time, arrival, sail and motor
-  time, waypoints, highest waves, validation) shows on the Route tab and
-  at the top of the Itinerary tab. The plan (start,
-  destination, waypoints with their radii, departure) is kept in the
-  browser and restored on reload; a departure that has passed is set to
-  now, and the status line says so.
+  pin dragged, a route opened) stays as it is (the page never asks the
+  browser for its location). The route summary (distance, time,
+  arrival, sail and motor time, waypoints, highest waves, validation)
+  shows on the Route tab and at the top of the Itinerary tab. The plan
+  (start, destination, waypoints with their radii, departure) is kept in
+  the browser and restored on reload; a departure that has passed is set
+  to now, and the status line says so.
 - **Your choices follow the Signal K user.** The vessel (polar, sail or
   power, the power boat's name and cruise speed), the Route → Options
   settings and the Route tab's search and router choices are kept in the

@@ -318,8 +318,8 @@ uses [Semantic Versioning](https://semver.org/).
   the saved zoom, unless the load restores a plan (a start or a
   destination from the last visit): then the map opens where it was
   left, with the plan. A map the user has used before that fix (panned,
-  zoomed, clicked, a marker dragged) stays as it is, and without a
-  position the saved view stays.
+  zoomed, clicked, a marker dragged, a route opened) stays as it is, and
+  without a position the saved view stays.
 
 ## [0.2.1-beta.1] - 2026-10-29
 

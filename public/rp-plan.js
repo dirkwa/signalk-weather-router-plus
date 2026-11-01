@@ -7,7 +7,7 @@
 import { oneOpenAtATime, _apiErrorText, _fmt, _shortUtc, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { prefs } from './rp-prefs.js';
-import { _overlayTimeIso, centreOnVesselOnce, keepStartView, clearSearchBoat, showSearchBoat, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, cancelCentreOnVessel, clearSearchBoat, showSearchBoat, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 // The limit inputs and the quantity of each (used by _limitSI, below). Declared
@@ -445,6 +445,7 @@ function _fitRouteInView() {
   const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
   if (shift) { ext[0] += shift; ext[2] += shift; }
   if (!ext || !ext.every(Number.isFinite)) return;
+  cancelCentreOnVessel();   // the route is what the map shows now, not the boat (rp-layers.js)
   map.getView().fit(ext, {
     padding: _mapFitPadding(),
     duration: 400,
@@ -1586,7 +1587,7 @@ function _restorePlan() {
       updateCoordDisplay('end', endCoord);
     }
     // A plan from the last visit: the map opens where it was left, with the plan, not on the boat (PR #70 review).
-    if (startCoord || endCoord) keepStartView();
+    if (startCoord || endCoord) cancelCentreOnVessel();
     const wps = Array.isArray(plan.waypoints) ? plan.waypoints.filter(ll) : [];
     if (wps.length === (Array.isArray(plan.waypoints) ? plan.waypoints.length : 0)) {
       waypointCoords = wps.map(c => [c[0], c[1]]);
