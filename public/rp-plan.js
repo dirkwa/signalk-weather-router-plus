@@ -526,9 +526,10 @@ function _loadRouteJob(id, given, { computed = false } = {}) {
       showTab('itinerarySection');
     })
     .catch(err => {
-      // Forgotten when the server answered no or another route was opened; a request cut off by a reload, or the
-      // server out of reach, keeps it.
-      if (computed && (err.status || _currentRouteJobId !== id)) _forgetComputing(id);
+      // Forgotten when the server answered that the route will not come (4xx: no such job, or no route to load) or
+      // another route was opened; a request cut off by a reload, the server out of reach, or not ready (5xx: 503
+      // while the plugin starts) keeps it, as the status lookup does (_jobOnError).
+      if (computed && ((err.status && err.status < 500) || _currentRouteJobId !== id)) _forgetComputing(id);
       if (_currentRouteJobId !== id) return;   // another route was opened meanwhile
       console.error('Failed to load route:', err);
       const st = document.getElementById('status');
@@ -2700,9 +2701,8 @@ function _jobOnDone(job, d) {
       showTab('itinerarySection');
     })
     .catch(err => {
-      // Forgotten when the server answered no or another route was opened; a request cut off by a reload, or the
-      // server out of reach, keeps it.
-      if (err.status || _currentRouteJobId !== id) _forgetComputing(id);
+      // Forgotten on a 4xx or when another route was opened; kept on a 5xx or no answer (as in _loadRouteJob).
+      if ((err.status && err.status < 500) || _currentRouteJobId !== id) _forgetComputing(id);
       if (_currentRouteJobId !== id) return;   // a job no longer current: the route shown is another's
       // No route is shown after all (PR #39 review): the hint and the stale check must not act on one.
       routeActive = false;
