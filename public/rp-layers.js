@@ -1961,19 +1961,23 @@ function _smallScreen() {
   setAttribH();
 })();
 
-// Every load opens on the boat: routes are planned from where it is, and
-// the view saved last time can be anywhere (on a first visit, Block
-// Island Sound). The first Signal K fix centres the map on it, keeping
-// the saved zoom, unless the map has moved since the load (the user, or
-// a route fitted into view) before the fix came. The page never asks
-// the browser for its location: the vessel's position comes from Signal K.
+// A load opens on the boat unless it restores a plan: routes are planned
+// from where the boat is, and the view saved last time can be anywhere
+// (on a first visit, Block Island Sound). The first Signal K fix centres
+// the map on it, keeping the saved zoom, unless the map has moved since
+// the load (the user, or a route fitted into view) before the fix came.
+// A plan restored from the last visit (a start or an end marker) keeps
+// the saved view instead, where that plan was left (keepSavedView; PR #70
+// review). The page never asks the browser for its location: the
+// vessel's position comes from Signal K.
 //
 // The view is saved on every move, so the zoom carries over and the
 // start view stands in while Signal K has no position. OL fires moveend
 // after the first render too; that one is not a move, and saving it would
-// keep the default view on a first visit. A zoom is a move: the zoom
-// buttons keep the centre (PR #70 review).
-let _autoCentreOnVessel = true;   // until the first Signal K fix, or the map moves
+// keep the default view on a first visit (after a restored plan it only
+// writes the saved view back). A zoom is a move: the zoom buttons keep
+// the centre (PR #70 review).
+let _autoCentreOnVessel = true;   // until the first Signal K fix, the map moves, or a plan is restored
 const _startCenter = map.getView().getCenter();
 const _startZoom = map.getView().getZoom();
 map.on('moveend', function() {
@@ -1989,6 +1993,11 @@ map.on('moveend', function() {
 // A pan or pinch under way has not reached moveend yet: a fix that comes
 // during it must not pull the map out from under the user (PR #70 review).
 map.on('pointerdrag', function() { _autoCentreOnVessel = false; });
+// A restored plan keeps the saved view (rp-plan.js _restorePlan). Without
+// one there is nothing to keep, and the boat is the better start.
+export function keepSavedView() {
+  if (_SAVED_VIEW) _autoCentreOnVessel = false;
+}
 // The first Signal K fix of the load opens the map on the boat (rp-plan.js).
 // Not while the view is animating: something else (a route being fitted)
 // is moving the map already.

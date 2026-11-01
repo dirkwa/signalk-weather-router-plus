@@ -428,11 +428,12 @@ computed with what that request says, not with the user's saved Setup.
   that point as a waypoint. The button under the zoom buttons (⌖)
   centres the map on the boat's Signal K position (`navigation.position`),
   keeping the zoom. The page opens on it too, at the zoom it was left at,
-  once Signal K has a position; a map panned or zoomed before that stays
-  as it is (the page never asks the browser for its location). The
-  route summary (distance, time, arrival, sail and motor time,
-  waypoints, highest waves, validation) shows on the
-  Route tab and at the top of the Itinerary tab. The plan (start,
+  once Signal K has a position, unless it restores a plan (below): then
+  it opens where that plan was left. A map panned or zoomed before the
+  position comes stays as it is (the page never asks the browser for its
+  location). The route summary (distance, time, arrival, sail and motor
+  time, waypoints, highest waves, validation) shows on the Route tab and
+  at the top of the Itinerary tab. The plan (start,
   destination, waypoints with their radii, departure) is kept in the
   browser and restored on reload; a departure that has passed is set to
   now, and the status line says so.
