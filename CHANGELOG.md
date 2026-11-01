@@ -218,7 +218,9 @@ uses [Semantic Versioning](https://semver.org/).
   markers move, and comes back on load only for the plan on the page.
   A comparison started and then changed under (a marker moved before its
   first poll) is marked out of date from that first poll, by its request
-  against the plan (PR #91 review).
+  against the plan; the plan a comparison is matched against includes the
+  waypoint precision and, when approximate, each waypoint's circle, so one
+  computed before those changed is not shown as current (PR #91 review).
 - **The per-route limit controls say what the route will get.** Block /
   Avoid for each limit showed "Block" while the routing settings had not
   loaded, or had failed to load, though nothing was sent and the server

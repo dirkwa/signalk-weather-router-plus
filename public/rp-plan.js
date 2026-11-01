@@ -3781,13 +3781,27 @@ function _winMarkStale() {
   _winStale = true;
   _winRender();
 }
-// Does a window's request describe the plan on the page (start, destination, waypoints)?
+// Does a window's request describe the plan on the page: start, destination and waypoints by position, and with
+// waypoints their behaviour too, the precision and, when approximate, each waypoint's circle (its own radius, else the
+// request's arrival radius, against the page's loaded radius, else the slider), as buildRoutePayload sends them. A
+// window computed before the precision or a radius changed is another request's (PR #91 review).
 function _winMatchesPlan(w) {
   const rt = w && w.request && w.request.route;
   if (!rt || !rt.start || !rt.end || !startCoord || !endCoord) return false;
   const same = (p, c) => Math.abs(p.lat - c[1]) < 1e-6 && Math.abs(p.lon - c[0]) < 1e-6;
   const wps = Array.isArray(rt.waypoints) ? rt.waypoints : [];
-  return same(rt.start, startCoord) && same(rt.end, endCoord) && wps.length === waypointCoords.length && wps.every((p, i) => same(p, waypointCoords[i]));
+  if (!(same(rt.start, startCoord) && same(rt.end, endCoord) && wps.length === waypointCoords.length && wps.every((p, i) => same(p, waypointCoords[i])))) return false;
+  if (!wps.length) return true;
+  const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
+  const approximate = !!precEl && precEl.value === 'approximate';
+  if ((rt.precision === 'approximate') !== approximate) return false;
+  if (!approximate) return true;
+  const slider = parseFloat(/** @type {HTMLInputElement} */ (document.getElementById('arrivalRadiusM')).value);
+  return wps.every((p, i) => {
+    const asked = Number.isFinite(p.radius_m) ? p.radius_m : rt.arrival_radius_m;
+    const here = Number.isFinite(waypointRadii[i]) ? waypointRadii[i] : slider;
+    return Number.isFinite(asked) && Number.isFinite(here) && Math.abs(asked - here) < 1e-6;
+  });
 }
 
 // The departures the inputs describe (ms), or null with the reason.
