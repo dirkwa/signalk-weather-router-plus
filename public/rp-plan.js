@@ -473,6 +473,13 @@ function _clearRouteTime() {
 // from Saved: no "Recompute?" banner, and the job stays remembered for a reload until its route has loaded.
 function _loadRouteJob(id, given, { computed = false } = {}) {
   if (!id) return;
+  // A route the user opens wins over a remembered computation this page is not following (its startup lookup failed):
+  // a reload would otherwise bring that one back in its place. One the page is following stays remembered.
+  if (!computed) {
+    let remembered = null;
+    try { remembered = localStorage.getItem(_COMPUTING_KEY); } catch (_) { /* nothing remembered */ }
+    if (remembered && remembered !== _activeJobId) _forgetComputing(remembered);
+  }
   const job = given || routeHistoryItems.find(j => j.id === id);
   if (job && (job.status === 'running' || job.status === 'queued')) {
     // Re-attach to a job in progress: same SSE ladder as Find Route.
