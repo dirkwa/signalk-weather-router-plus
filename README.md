@@ -2014,7 +2014,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
 | `departure` | string | ISO 8601 | now | an empty string also means now |
-| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`) |
+| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor; the forecast is still read, so the wind and wave limits and the comfort weight apply (only `no_forecast` routes in calm wind); `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`) |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
 | `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |

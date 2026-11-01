@@ -464,6 +464,20 @@ test('coastline tiles: exact tests equal the whole records, on tile borders too'
   }
 });
 
+test('a raster over the size limit is refused before anything is allocated or read, from the tiles as from polygons', () => {
+  const file = fixture();
+  const coast = coastOf([file]);
+  const world = { west: -180, south: -90, east: 180, north: 90 };
+  const reads = coast.cacheStats().decodes;
+  // 0.002° over the world: 16 billion cells.
+  assert.throws(() => LandMask.fromCoastline(coast, world, { resolutionDeg: 0.002 }), /too large; use a coarser resolution/);
+  assert.throws(() => LandMask.fromTiles(coast, world, 0.002), /too large; use a coarser resolution/);
+  assert.throws(() => LandMask.fromPolygons([], world, 0.002), /too large; use a coarser resolution/);
+  assert.equal(coast.cacheStats().decodes, reads, 'no tile was read');
+  // Under the limit, the same calls work.
+  assert.ok(LandMask.fromCoastline(coast, world, { resolutionDeg: 0.25 }).nx > 0);
+});
+
 test('coastline tiles: the point test matches the byte-level record test, antimeridian included', () => {
   const file = fixture();
   const coast = coastOf([file]);

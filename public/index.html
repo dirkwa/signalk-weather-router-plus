@@ -450,6 +450,10 @@
     display: block; margin: var(--s-2) 0 var(--s-1);
     color: var(--text-2); font-size: var(--f-sm);
   }
+  /* The `hidden` attribute hides whatever carries it in the panel. The browser's own [hidden] rule loses to any
+     author rule that sets display (the labels above: the Avoid strength row, hidden while both limits block, stayed
+     visible; PR #91 review), so the panel says it once for every element. */
+  #panel [hidden] { display: none; }
   #panel .coord {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--f-sm); color: var(--text);

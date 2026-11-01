@@ -159,13 +159,8 @@ export class LandMask implements LandTest {
     this.nx = dims?.nx ?? Math.max(1, Math.ceil(bboxWidth(bbox) / resolutionDeg));
     this.ny = dims?.ny ?? Math.max(1, Math.ceil(bboxHeight(bbox) / resolutionDeg));
     if (dims?.edgeCells === false) this.edgeCells = false;
+    LandMask.assertCells(this.nx, this.ny);
     const cells = this.nx * this.ny;
-    if (cells > 400_000_000) {
-      throw new Error(
-        `LandMask raster of ${this.nx}x${this.ny} = ${(cells / 1e6).toFixed(0)}M cells is too large; ` +
-          'use a coarser resolution or a smaller bbox'
-      );
-    }
     if (raster) {
       if (raster.length !== cells) throw new Error(`LandMask raster has ${raster.length} cells, expected ${cells}`);
       this.raster = raster;
@@ -173,6 +168,25 @@ export class LandMask implements LandTest {
       this.raster = new Uint8Array(cells);
       this.rasterize();
     }
+  }
+
+  /** The raster size limit, checked before any raster is allocated (the constructor's, and the tile drawers' before they draw). */
+  static readonly MAX_CELLS = 400_000_000;
+
+  /** The dimensions a raster over `bbox` at `res` gets (an explicit size wins), as the constructor computes them. */
+  private static dimsFor(bbox: BBox, res: number, dims?: { nx?: number; ny?: number }): { nx: number; ny: number } {
+    return {
+      nx: dims?.nx ?? Math.max(1, Math.ceil(bboxWidth(bbox) / res)),
+      ny: dims?.ny ?? Math.max(1, Math.ceil(bboxHeight(bbox) / res)),
+    };
+  }
+
+  private static assertCells(nx: number, ny: number): void {
+    const cells = nx * ny;
+    if (cells > LandMask.MAX_CELLS)
+      throw new Error(
+        `LandMask raster of ${nx}x${ny} = ${(cells / 1e6).toFixed(0)}M cells is too large; use a coarser resolution or a smaller bbox`
+      );
   }
 
   /** Structured-clone friendly raster form (no polygons; isLandExact is unavailable). */
@@ -208,7 +222,10 @@ export class LandMask implements LandTest {
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
-    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, padded, resolutionDeg);
+    // The size limit before the raster is allocated and the tiles read (the constructor checks it again).
+    const d = LandMask.dimsFor(padded, resolutionDeg);
+    LandMask.assertCells(d.nx, d.ny);
+    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, padded, resolutionDeg, d);
     return new LandMask([], padded, resolutionDeg, raster, { nx, ny }, coast, pieces);
   }
 
@@ -218,7 +235,9 @@ export class LandMask implements LandTest {
    * isLandExact is unavailable. `pieces`: how many were drawn.
    */
   static fromTiles(coast: CoastTiles, bbox: BBox, res: number, opts: RasterStreamOptions = {}): { mask: LandMask; pieces: number } {
-    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, bbox, res, opts);
+    const d = LandMask.dimsFor(bbox, res, opts);
+    LandMask.assertCells(d.nx, d.ny);
+    const { raster, nx, ny, pieces } = drawRasterFromTiles(coast, bbox, res, { ...opts, ...d });
     return { mask: new LandMask([], bbox, res, raster, { nx, ny, edgeCells: opts.edgeCells }, null, pieces), pieces };
   }
 
