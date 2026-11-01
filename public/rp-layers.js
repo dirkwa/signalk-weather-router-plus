@@ -1965,7 +1965,8 @@ function _smallScreen() {
 // from where the boat is, and the view saved last time can be anywhere
 // (on a first visit, Block Island Sound). The first Signal K fix centres
 // the map on it, keeping the saved zoom, unless the map has moved since
-// the load (the user, or a route fitted into view) before the fix came.
+// the load (a route fitted into view) or the user has used it before the
+// fix came.
 // A plan restored from the last visit (a start or an end marker) keeps
 // the saved view instead, where that plan was left (keepSavedView; PR #70
 // review). The page never asks the browser for its location: the
@@ -1977,7 +1978,7 @@ function _smallScreen() {
 // keep the default view on a first visit (after a restored plan it only
 // writes the saved view back). A zoom is a move: the zoom buttons keep
 // the centre (PR #70 review).
-let _autoCentreOnVessel = true;   // until the first Signal K fix, the map moves, or a plan is restored
+let _autoCentreOnVessel = true;   // until the first Signal K fix, input on the map, a move, or a restored plan
 const _startCenter = map.getView().getCenter();
 const _startZoom = map.getView().getZoom();
 map.on('moveend', function() {
@@ -1990,9 +1991,19 @@ map.on('moveend', function() {
   const [lon, lat] = ol.proj.toLonLat(c);
   try { localStorage.setItem('rp:view', JSON.stringify({ lon, lat, zoom: v.getZoom() })); } catch (_) {}
 });
-// A pan or pinch under way has not reached moveend yet: a fix that comes
-// during it must not pull the map out from under the user (PR #70 review).
-map.on('pointerdrag', function() { _autoCentreOnVessel = false; });
+// Input on the map has not reached moveend yet, or never moves the view: a
+// pan or pinch under way, a wheel or trackpad zoom (OL holds a wheel notch
+// 80 ms before it zooms), a click that opened the map menu, a marker being
+// dragged. A fix that comes after it must not pull the map out from under
+// the user (PR #70 review). Not on the controls or the map menu and popups,
+// which OL keeps out of its map events too: a zoom button counts by its
+// moveend, ⌖ asks for the boat, and a menu opens only after a press on the
+// map, which counted.
+const _userOnMap = (/** @type {Event} */ e) => {
+  if (!map.getOverlayContainerStopEvent().contains(/** @type {Node} */ (e.target))) _autoCentreOnVessel = false;
+};
+map.getViewport().addEventListener('pointerdown', _userOnMap, { passive: true });
+map.getViewport().addEventListener('wheel', _userOnMap, { passive: true });
 // A restored plan keeps the saved view (rp-plan.js _restorePlan). Without
 // one there is nothing to keep, and the boat is the better start.
 export function keepSavedView() {
