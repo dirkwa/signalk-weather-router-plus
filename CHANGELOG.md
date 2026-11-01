@@ -122,6 +122,13 @@ uses [Semantic Versioning](https://semver.org/).
   A motor route now loads the forecast like any other (`no_forecast`
   still routes with calm wind), and its open stretches on the mesh are
   searched under motor as under sail.
+- **The panel fits the screen on an iPad.** Its height was capped with
+  `vh`, which is the viewport with the browser's bars retracted (MDN,
+  `<length>`). This page never scrolls, so Safari's bars stay out, and
+  the panel ran under the bottom edge: its last part (Best departure)
+  could not be scrolled to. The cap is in `dvh` now, the viewport as it
+  is, with `vh` kept for browsers without it; the conditions card on a
+  phone held sideways likewise.
 
 
 - **Where a leg joins the charts is chosen by distance over water.** The
@@ -186,6 +193,21 @@ uses [Semantic Versioning](https://semver.org/).
   route choices); the routing setting is where it starts, and is what a
   route gets until the user chooses. It was only in Settings, for the
   whole server.
+- **The data sources say how fresh they are on a touch screen too.**
+  When a run was published and the next is due were only in a pill's
+  tooltip, which a touch screen never shows, and Refresh forecast was
+  under Log → Forecast data. A tap anywhere on the collapsed header line
+  now opens the list. Under each source it says, as text, when the run
+  was published, when the next is due, and when it was last checked and
+  what that found; under the list, what the colours mean, how often the
+  plugin checks, and **Check now**, which says when a check is under way
+  and asks once per check (the error line offers it too when the first
+  forecast could not be loaded).
+  Each pill says, in brackets after the age, when the next run is due:
+  *10.2 hour old (next in 2.3 hour)*, *(expected now)* once it is due,
+  *(1.5 hour late)* when red; the Freeboard panel's pills too (in whole
+  hours). The pills redraw when the units arrive, so they no longer read
+  "— old" until the next status.
 
 ### Changed
 
