@@ -641,8 +641,11 @@
   #panel details.subsection[open] > summary::before { content: '−'; }
   #panel details.subsection > summary:hover { color: var(--text); }
   #panel details.subsection .subsection-body { padding: 4px var(--s-3) var(--s-2); }
-  /* Best departure: the button beside Departure opens it (rp-plan.js), so it has no summary line and no room closed. */
-  .dep-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-1); }
+  /* Best departure: the button beside Departure opens it (rp-plan.js), so it has no summary line and no room closed.
+     The row wraps: where the Departure column is narrower than label and button, the button goes under the label
+     rather than widening the column past the panel; the Departure | Route name row aligns its columns at the bottom,
+     so the two fields stay level when it does. */
+  .dep-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: var(--s-1); }
   #bestDepBtn { padding: 0 6px; line-height: 1.5; white-space: nowrap; }
   #bestDepBtn[aria-expanded="true"] { background: var(--surface-3); }
   #panel details#windowSection > summary { display: none; }
@@ -898,7 +901,7 @@
   <label>Waypoints (orange) — click map to add</label>
   <div id="waypointList" class="coord" style="font-size:11px;"><span style="color:#888">No intermediate waypoints</span></div>
 
-  <div style="display:flex;gap:var(--s-2);">
+  <div style="display:flex;gap:var(--s-2);align-items:flex-end;">
     <div style="flex:1;"><div class="dep-head"><label for="departure">Departure</label><button type="button" id="bestDepBtn" class="sm-btn" aria-controls="windowSection" aria-expanded="false" title="Compare this route over a series of departures">Best departure ▸</button></div><input type="datetime-local" id="departure"></div>
     <div style="flex:1;"><label>Route name</label><input type="text" id="routeName" placeholder="(optional)" maxlength="200"></div>
   </div>
