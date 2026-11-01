@@ -197,9 +197,20 @@ export class LandMask implements LandTest {
 
   /**
    * Finest resolution from `candidates` whose raster over `bbox` (plus
-   * buffer) stays within `maxCells`. Falls back to the coarsest candidate.
+   * buffer) stays within `maxCells`. Falls back to the coarsest candidate,
+   * so the list runs up to 0.1°: a search's world as wide as the heading
+   * sweep can reach (engine/corridor.ts worldBox, up to 120° × 90°) must
+   * still fit the budget; until 2026-11-01 the list ended at 0.01°, which
+   * put a 120° × 90° world at 108 M cells against a budget of 25 M (PR #91
+   * review). The band along the route is drawn at its own size inside
+   * (refineBand), so only the far world is coarse.
    */
-  static chooseResolution(bbox: BBox, maxCells = 25_000_000, bufferDeg = 0.1, candidates = [0.0005, 0.001, 0.002, 0.005, 0.01]): number {
+  static chooseResolution(
+    bbox: BBox,
+    maxCells = 25_000_000,
+    bufferDeg = 0.1,
+    candidates = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]
+  ): number {
     const w = Math.min(360, bboxWidth(bbox) + 2 * bufferDeg);
     const h = Math.min(180, bboxHeight(bbox) + 2 * bufferDeg);
     const sorted = [...candidates].sort((a, b) => a - b);

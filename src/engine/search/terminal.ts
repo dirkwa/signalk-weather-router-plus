@@ -9,7 +9,7 @@
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../../geo/geodesy';
 import { norm360, twaFromHeading } from '../../geo/angles';
-import { DEG, NM_M } from '../../geo/units';
+import { DEG, M_PER_DEG, NM_M } from '../../geo/units';
 import type { CurrentSource, WindSource } from '../environment';
 import { simulateLegTime, tackChargeS, type LegSimResult, type ModePolicy, type SimOptions } from '../legsim';
 import type { PolarDiagram } from '../../vessel/polar';
@@ -49,33 +49,63 @@ function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Cand
   // The coastline raster (a view of it with the meshes' water as land, pipeline.ts); a search on other land (a mesh
   // stretch's, mesh/legrun.ts) has no raster to walk.
   if (!(landMask instanceof LandMask)) return null;
-  const { nx, ny, resolutionDeg: r, bbox } = landMask;
-  const centre = (c: number): [number, number] => [bbox.west + ((c % nx) + 0.5) * r, bbox.south + (Math.floor(c / nx) + 0.5) * r];
+  const r = landMask.resolutionDeg;
+  // The raster's grid, for cellOf (which reads no cells).
+  const grid: CellMask = { nx: landMask.nx, ny: landMask.ny, resolutionDeg: r, bbox: landMask.bbox, cells: new Uint8Array(0) };
+  const endCell = cellOf(grid, eLon, eLat);
+  if (endCell < 0) return null;
+  const frontCells = front.map(c => cellOf(grid, c.lon, c.lat));
+  // The field over a window of the raster round the front and the end, not the whole raster (4 bytes a cell: the
+  // search's world can be 25 M cells; PR #91 review): the window is the box of their cells padded by `padM` on each
+  // side, first one stage step. The answer is exact when the best candidate's distance by water is at most the pad:
+  // any path leaving the window runs at least the pad out and back, so none outside is shorter. Otherwise the pad
+  // doubles and the field is walked again, up to the whole raster.
+  const walk = (padM: number): { w: Window; field: Float32Array; bestC: Candidate | null; bestM: number } | null => {
+    const w = windowOf(grid, [endCell, ...frontCells.filter(c => c >= 0)], padM);
+    const field = waterFieldOver(
+      w.grid,
+      c => {
+        const [lon, lat] = w.centre(c);
+        return !landMask.isLand(lon, lat);
+      },
+      w.local(endCell)
+    );
+    if (!field) return null;
+    let bestC: Candidate | null = null;
+    let bestCost = Infinity;
+    let bestM = Infinity;
+    front.forEach((c, k) => {
+      const cell = frontCells[k];
+      const d = cell >= 0 ? field[w.local(cell)] : Infinity;
+      if (!Number.isFinite(d)) return;
+      const cost = c.costS + d / cruise;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestM = d;
+        bestC = c;
+      }
+    });
+    return { w, field, bestC, bestM };
+  };
+  let padM = ctx.budget.candStepM;
+  let got = walk(padM);
+  while (got && !(got.bestC && got.bestM <= padM) && !got.w.whole) {
+    padM *= 2;
+    got = walk(padM);
+  }
+  if (!got || !got.bestC) return null;
+  const { w, field } = got;
+  const bestC: Candidate = got.bestC;
+  const { nx, ny } = w.grid;
   const free = (c: number): boolean => {
-    const [lon, lat] = centre(c);
+    const [lon, lat] = w.centre(c);
     return !landMask.isLand(lon, lat);
   };
-  // The raster's grid, for cellOf (which reads no cells).
-  const grid: CellMask = { nx, ny, resolutionDeg: r, bbox, cells: new Uint8Array(0) };
-  const endCell = cellOf(grid, eLon, eLat);
-  const field = waterFieldOver(grid, free, endCell);
-  if (!field) return null;
-  let bestC: Candidate | null = null;
-  let bestCost = Infinity;
-  for (const c of front) {
-    const cell = cellOf(grid, c.lon, c.lat);
-    if (cell < 0 || !Number.isFinite(field[cell])) continue;
-    const cost = c.costS + field[cell] / cruise;
-    if (cost < bestCost) {
-      bestCost = cost;
-      bestC = c;
-    }
-  }
-  if (!bestC) return null;
   // Down the field to the end: the neighbour nearest it by water at each step (the field's own moves).
   const cells: number[] = [];
-  let cur = cellOf(grid, bestC.lon, bestC.lat);
-  while (cur !== endCell) {
+  const endLocal = w.local(endCell);
+  let cur = w.local(cellOf(grid, bestC.lon, bestC.lat));
+  while (cur !== endLocal) {
     const i = cur % nx;
     const j = Math.floor(cur / nx);
     let next = -1;
@@ -89,14 +119,14 @@ function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Cand
         // The field's own moves only: water, and a diagonal where both cells beside it are water (waterFieldOver), so
         // the walk never slips between two land cells touching at a corner (PR #91 review).
         // The end's own cell is the field's source, passable whatever it is.
-        if ((n !== endCell && !free(n)) || (di !== 0 && dj !== 0 && (!free(j * nx + ii) || !free(jj * nx + i)))) continue;
+        if ((n !== endLocal && !free(n)) || (di !== 0 && dj !== 0 && (!free(j * nx + ii) || !free(jj * nx + i)))) continue;
         if (next < 0 || field[n] < field[next]) next = n;
       }
     if (next < 0 || !(field[next] < field[cur])) return null;
     cur = next;
-    if (cur !== endCell) cells.push(cur);
+    if (cur !== endLocal) cells.push(cur);
   }
-  const path: [number, number][] = [[bestC.lon, bestC.lat], ...cells.map(centre), [eLon, eLat]];
+  const path: [number, number][] = [[bestC.lon, bestC.lat], ...cells.map(c => w.centre(c)), [eLon, eLat]];
   // The fewest straight moves: from each point, the farthest one ahead whose move is clear.
   const pts: [number, number][] = [path[0]];
   let k = 0;
@@ -138,6 +168,63 @@ function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Cand
     `final approach along the water path to where the leg joins the charts: {distance:${Math.round(lengthM)}} in ${approach.length} move(s), no clear straight final leg`
   );
   return { bestC, stageOfBest, approach };
+}
+
+/** A window of a raster's cells: its own grid, and the mapping of a cell of the whole raster to the window and back. */
+interface Window {
+  grid: CellMask;
+  /** The window is the whole raster. */
+  whole: boolean;
+  /** The window's cell index of a raster cell (which must lie in the window). */
+  local(c: number): number;
+  /** Centre of a window cell, degrees. */
+  centre(c: number): [number, number];
+}
+
+/** The window of `grid` round the given cells, padded by `padM` metres each way (east-west at the box's widest latitude), clipped to the raster. */
+function windowOf(grid: CellMask, cells: number[], padM: number): Window {
+  const { nx, ny, resolutionDeg: r } = grid;
+  let i0 = Infinity;
+  let i1 = -Infinity;
+  let j0 = Infinity;
+  let j1 = -Infinity;
+  for (const c of cells) {
+    const i = c % nx;
+    const j = (c - i) / nx;
+    i0 = Math.min(i0, i);
+    i1 = Math.max(i1, i);
+    j0 = Math.min(j0, j);
+    j1 = Math.max(j1, j);
+  }
+  const padJ = Math.ceil(padM / (r * M_PER_DEG));
+  const latEdge = Math.max(Math.abs(grid.bbox.south + j0 * r), Math.abs(grid.bbox.south + (j1 + 1) * r));
+  const padI = Math.ceil(padM / (r * M_PER_DEG * Math.max(0.05, Math.cos(latEdge * DEG))));
+  const ia = Math.max(0, i0 - padI);
+  const ib = Math.min(nx - 1, i1 + padI);
+  const ja = Math.max(0, j0 - padJ);
+  const jb = Math.min(ny - 1, j1 + padJ);
+  const wnx = ib - ia + 1;
+  const wny = jb - ja + 1;
+  const west = grid.bbox.west + ia * r;
+  const south = grid.bbox.south + ja * r;
+  return {
+    grid: {
+      nx: wnx,
+      ny: wny,
+      resolutionDeg: r,
+      bbox: { west, south, east: west + wnx * r, north: south + wny * r },
+      cells: new Uint8Array(0),
+    },
+    whole: ia === 0 && ja === 0 && ib === nx - 1 && jb === ny - 1,
+    local: c => {
+      const i = c % nx;
+      return ((c - i) / nx - ja) * wnx + (i - ia);
+    },
+    centre: c => {
+      const i = c % wnx;
+      return [west + (i + 0.5) * r, south + ((c - i) / wnx + 0.5) * r];
+    },
+  };
 }
 
 /**

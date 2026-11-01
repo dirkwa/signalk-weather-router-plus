@@ -51,6 +51,21 @@ uses [Semantic Versioning](https://semver.org/).
   their final hop arrive later by the penalty (30 s by default); the
   refined router's beats are timed by the tacks they sail.
 
+- **The land raster's cell budget holds for the widest world.** The cell
+  sizes the budget chose from ended at 0.01°, so a world the budget could
+  not hold at 0.01° was drawn at 0.01° anyway: a transatlantic leg at
+  Maximum effort, or any world at the 120° × 90° limit, meant 108 M cells
+  (108 MB, twice with the land buffer) against a budget of 25 M. The
+  choice now goes on to 0.02°, 0.05° and 0.1° until the budget holds; the
+  band along the route keeps its own finer cells. No leg under the budget
+  changes (PR #91 review).
+- **The water approach at a chart's edge walks a window, not the whole
+  raster.** Its distance field took 4 bytes for every cell of the search's
+  world. It now covers the box round the front and the end, padded by one
+  stage step, and widens only while the best candidate's way by water is
+  longer than the pad (then no shorter way can lie outside), so the answer
+  is the one the whole raster gave (PR #91 review).
+
 - An open stretch ending where the leg joins the chart mesh no longer
   stalls when that point lies up a channel the search's straight moves
   cannot enter: with no clear straight final leg, the last part follows

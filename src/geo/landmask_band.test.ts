@@ -61,6 +61,28 @@ test('refineBand: the band gets the cell size its own box would get from the bud
   assert.equal(coarse.patches.length, 0);
 });
 
+test('chooseResolution keeps every box within the cell budget, a world at the 120° × 90° limit included', () => {
+  const budget = 25_000_000;
+  for (const box of [
+    { west: -1, south: -1, east: 1, north: 1 },
+    { west: -70.74, south: 22.29, east: -32.14, north: 59.29 },
+    { west: -100, south: 0, east: 20, north: 90 },
+    { west: -180, south: -90, east: 180, north: 90 },
+  ]) {
+    const r = LandMask.chooseResolution(box, budget);
+    const w = Math.min(360, box.east - box.west + 0.2);
+    const h = Math.min(180, box.north - box.south + 0.2);
+    assert.ok(
+      Math.ceil(w / r) * Math.ceil(h / r) <= budget,
+      `${JSON.stringify(box)}: ${r}° gives ${Math.ceil(w / r) * Math.ceil(h / r)} cells`
+    );
+  }
+  // A 120° × 90° world: 0.01° would be 108 M cells; 0.02° is 27 M; 0.05° fits.
+  assert.equal(LandMask.chooseResolution({ west: -100, south: 0, east: 20, north: 90 }, budget), 0.05);
+  // Small boxes are as before.
+  assert.equal(LandMask.chooseResolution({ west: -1, south: -1, east: 1, north: 1 }, budget), 0.0005);
+});
+
 test('refineTiled on a buffered mask keeps the buffer in every tile', () => {
   const m = LandMask.fromPolygons(islets, WORLD, 0.01).withBuffer(300);
   const patches = m.refineTiled(BAND, 0.002, 60_000);
