@@ -166,8 +166,15 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     return [skeleton[ti].lon, skeleton[ti].lat];
   };
   // The skeleton point each goal lies at (the vias and the end are on the skeleton: the corridor's chain, or the coarse
-  // A*'s), so the way to a goal along the water is the skeleton up to that point.
-  const goalIdx = skeleton && skeletonCum && nSk >= 2 ? goals.map(g => nearestSkeleton(g.lon, g.lat)) : [];
+  // A*'s), so the way to a goal along the water is the skeleton up to that point. Found in route order: each via at or
+  // after the goal before it, and the end at the skeleton's last point, which it is by construction. A point the route
+  // visits twice (a round trip, start and end the same place, routed as one search through its waypoints' circles) has
+  // two skeleton points; the nearest over the whole skeleton took the first, so the way home read as nothing left all
+  // the way home (PR #91 review, 2026-11-01).
+  const goalIdx: number[] = [];
+  if (skeleton && skeletonCum && nSk >= 2)
+    for (let gi = 0; gi < goals.length; gi++)
+      goalIdx.push(gi === goals.length - 1 ? nSk - 1 : nearestSkeleton(goals[gi].lon, goals[gi].lat, gi > 0 ? goalIdx[gi - 1] : 0));
   const remainingM = (lon: number, lat: number, viaCount: number): number => {
     const gk = Math.min(viaCount, goals.length - 1);
     const g = goals[gk];

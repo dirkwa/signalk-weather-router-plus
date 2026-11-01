@@ -95,6 +95,15 @@ uses [Semantic Versioning](https://semver.org/).
   search follows: to the nearest skeleton point, along it to the goal's
   point, and to the goal. A truly stuck front is refused as before; the
   refusal says "along the water" (docs/plans/stall-progress-along-water.md).
+- **A round trip's way home is measured home.** A route that returns to
+  a place it left, routed as one search through its waypoints' circles
+  (start and end the same harbour, approximate precision), has that place
+  on its skeleton twice; the stall rule's goal lookup took the first, so
+  on the whole way home it read about 2 km left (measured 2026-11-01, a
+  111 km out-and-back), and a homeward half that needed more than the
+  planned stages was refused as boxed in while closing on home. The goals
+  are now placed on the skeleton in route order, the end at its last point
+  (PR #91 review).
 - **A re-routed corridor gets its fine band too.** When the route raster
   closed a passage and the corridor was re-routed round it, the land mask
   was kept whenever the new corridor's world still fitted the old one, with

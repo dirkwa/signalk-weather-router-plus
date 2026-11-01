@@ -11,6 +11,10 @@ import { LandMask } from '../../geo/landmask';
 import type { ShapePolygon } from '../../geo/shapefile';
 import { OceanPropagator } from '../propagator';
 import { makeVessel } from '../../vessel/vessel';
+import { haversineDistanceM } from '../../geo/geodesy';
+import { cumulativeM } from './skeleton';
+import type { SearchContext } from './types';
+import { buildGuide } from './zones';
 
 function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, lat1: number): ShapePolygon {
   const c = [lon0, lat0, lon1, lat0, lon1, lat1, lon0, lat1, lon0, lat0];
@@ -61,6 +65,44 @@ test('a detour along a wall to a gap 33 km away is progress along the water: the
     assert.ok(Math.abs(last.lon - 0.1) < 1e-6 && Math.abs(last.lat - 0.3) < 1e-6, 'arrives');
     assert.ok(!lines.some(m => /boxed in/.test(m)), `gap ${gapM} m, ${stages} stages: not boxed in`);
   }
+});
+
+test('a round trip in one search: the way home is measured along the skeleton home, not to the start the route left', () => {
+  // Start A, a waypoint's circle at B 111 km east, end A: the skeleton goes out and back, so A is its first point and
+  // its last. The goal lookup took the first, and every branch on the way home read about 2 km left (measured
+  // 2026-11-01, PR #91 review): no progress, so a homeward half needing more than the planned stages was refused as
+  // boxed in while closing on home.
+  const A = { lon: 0, lat: 0 };
+  const B = { lon: 1, lat: 0 };
+  const out: { lon: number; lat: number }[] = [];
+  for (let i = 0; i <= 10; i++) out.push({ lon: i / 10, lat: 0 });
+  const skeleton = [...out, ...out.slice(0, -1).reverse()];
+  const guide = buildGuide(
+    {
+      progress: () => {},
+      eLon: A.lon,
+      eLat: A.lat,
+      goals: [
+        { ...B, radiusM: 500 },
+        { ...A, radiusM: 0 },
+      ],
+      K: 20,
+      budget: { deltaD: 5000, candStepM: 11000 },
+    } as unknown as SearchContext,
+    { skeleton, skeletonCum: cumulativeM(skeleton), widths: null }
+  );
+  // Out: the whole way to B from A, nothing left at B.
+  assert.ok(Math.abs(guide.remainingM(A.lon, A.lat, 0) - haversineDistanceM(A.lon, A.lat, B.lon, B.lat)) < 1, 'at A, heading for B');
+  assert.ok(guide.remainingM(B.lon, B.lat, 0) < 1, 'at B, heading for B');
+  // Home: the whole way back from B, falling the whole way, nothing left at A.
+  assert.ok(Math.abs(guide.remainingM(B.lon, B.lat, 1) - haversineDistanceM(A.lon, A.lat, B.lon, B.lat)) < 1, 'at B, heading home');
+  let last = Infinity;
+  for (const lon of [0.9, 0.7, 0.5, 0.3, 0.1]) {
+    const left = guide.remainingM(lon, 0.02, 1);
+    assert.ok(left < last - 20_000, `homeward at lon ${lon}: ${(left / 1000).toFixed(1)} km left, less than at the point before`);
+    last = left;
+  }
+  assert.ok(guide.remainingM(A.lon, A.lat, 1) < 1, 'home');
 });
 
 test('a front that cannot get on is still refused as boxed in, and the words say how close it came', () => {
