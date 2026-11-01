@@ -330,6 +330,59 @@ export class LandMask implements LandTest {
     return patch;
   }
 
+  /**
+   * Refine a box too large for one patch (refine's maxCells) as patches tiled
+   * over it, each of whole base cells. Returns the patches made (refine
+   * returns none for a tile an equal-or-finer patch already covers).
+   */
+  refineTiled(bbox: BBox, resolutionDeg: number, maxCells = 4_000_000): LandPatch[] {
+    const res0 = this.resolutionDeg;
+    if (!this.hasPolygons || !(resolutionDeg > 0) || resolutionDeg >= res0) return [];
+    const k = Math.max(2, Math.round(res0 / resolutionDeg));
+    const x0 = Math.max(0, Math.floor(lonOffsetFromWest(this.bbox, bbox.west) / res0));
+    const x1 = Math.min(this.nx, Math.ceil((lonOffsetFromWest(this.bbox, bbox.west) + bboxWidth(bbox)) / res0));
+    const y0 = Math.max(0, Math.floor((bbox.south - this.bbox.south) / res0));
+    const y1 = Math.min(this.ny, Math.ceil((bbox.north - this.bbox.south) / res0));
+    if (x1 <= x0 || y1 <= y0) return [];
+    // Base cells per tile side: a tile's patch (k × k cells per base cell, plus the buffer's margin cells on each
+    // side when the mask keeps one) stays under maxCells.
+    const [mx, my] = this.bufferM > 0 ? this.cellsFor(this.bufferM, res0 / k) : [0, 0];
+    const side = Math.max(1, Math.floor((Math.sqrt(maxCells) - 2 * Math.max(mx, my)) / k) - 1);
+    // A hair inside each tile's cell edges, so refine's floor and ceil land on these base cells and not a neighbour.
+    const eps = res0 * 1e-6;
+    const out: LandPatch[] = [];
+    for (let ya = y0; ya < y1; ya += side) {
+      const yb = Math.min(y1, ya + side);
+      for (let xa = x0; xa < x1; xa += side) {
+        const xb = Math.min(x1, xa + side);
+        const tile: BBox = {
+          west: wrapLon(this.bbox.west + xa * res0 + eps),
+          east: wrapLon(this.bbox.west + xb * res0 - eps),
+          south: this.bbox.south + ya * res0 + eps,
+          north: this.bbox.south + yb * res0 - eps,
+        };
+        const p = this.refine(tile, resolutionDeg, maxCells);
+        if (p) out.push(p);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The band along a route drawn at the cell size its own box would get
+   * from the cell budget (chooseResolution), as tiled patches over this
+   * coarser mask: the search's world is as wide as the heading sweep can
+   * reach (engine/corridor.ts worldBox) and drawn coarsely, while the coast
+   * near the route keeps the detail a route needs. Nothing happens when the
+   * band's size is no finer than this mask's. Returns what was drawn.
+   */
+  refineBand(band: BBox, maxCells = 25_000_000): { resolutionDeg: number; patches: number } | null {
+    const res = LandMask.chooseResolution(band, maxCells);
+    if (!(res < this.resolutionDeg)) return null;
+    const patches = this.refineTiled(band, res);
+    return patches.length ? { resolutionDeg: patches[0].resolutionDeg, patches: patches.length } : null;
+  }
+
   /** Drop all local patches (a cached mask reused for another route). */
   clearPatches(): void {
     this.patches.length = 0;

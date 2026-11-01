@@ -151,6 +151,8 @@ export interface Corridor {
   lengthM: number;
   /** Route raster box: the search's world (worldBox). */
   bbox: BBox;
+  /** The band along the corridor (its own box plus CORRIDOR_MARGIN_DEG), drawn at the band's own cell size inside the world. */
+  band: BBox;
   /** The heading sweep's reach over the leg, metres (searchReachM), that sized the box. */
   reachM: number;
   /** Route raster (with any local patches). */
@@ -171,8 +173,11 @@ export interface Corridor {
 export { CorridorError };
 
 export interface CorridorOptions {
-  /** Route raster for a box (cached by the caller). Must carry polygons (for refine). */
-  landFor: (bbox: BBox) => LandMask;
+  /**
+   * Route raster for a box (cached by the caller). Must carry polygons (for refine). `band`: the corridor's own box
+   * inside the world, to be drawn at the cell size it would get alone (LandMask.refineBand) when the world is coarser.
+   */
+  landFor: (bbox: BBox, band?: BBox) => LandMask;
   /** Stages the propagator will use (for the via width threshold). */
   stages: number;
   /** The propagator's heading sweep half angle, degrees (search/types.ts fanHalfDeg); sizes the world (worldBox). */
@@ -811,7 +816,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     }
     const box = worldBox(near, gridPathLengthM(grid, path), fan, CORRIDOR_MARGIN_DEG);
     if (!land || !landBox || !bboxInside(box, landBox)) {
-      land = opts.landFor(box);
+      land = opts.landFor(box, near);
       landBox = box;
       if (land.hasPolygons) {
         chain.forEach(([lon, lat], i) => {
@@ -885,6 +890,8 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   }
   if (!land || !landBox) throw new CorridorError('internal: no route raster');
   const reachM = searchReachM(gridPathLengthM(grid, path), fan);
+  // The band along the final path (the box the raster was asked to draw finely), for the leg's progress line.
+  const band = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
 
   // 4. Skeleton: each leg's grid path smoothed (line of sight on the grid),
   // with the exact route points at the leg ends, densified.
@@ -934,7 +941,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const stepM = lengthM / Math.max(1, opts.stages);
   const autoVias = findAutoVias(grid, path, segStart, chain, stepM, land);
   const shoreM = shoreProfile(land, skeleton);
-  return { skeleton, widthM, shoreM, lengthM, bbox: landBox, reachM, land, autoVias, stats };
+  return { skeleton, widthM, shoreM, lengthM, bbox: landBox, band, reachM, land, autoVias, stats };
 }
 
 /**

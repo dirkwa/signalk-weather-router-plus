@@ -23,6 +23,15 @@ uses [Semantic Versioning](https://semver.org/).
   s → 22,920 s, the roughest seas met 3.3 m → 3.1 m, for 2.2 h more
   passage; at the normal sweep the route is unchanged. The progress log
   names the search area and the reach.
+- **The coast near the route stays sharp in the wider world.** The land
+  raster has one cell budget, so a wider world means coarser cells (the
+  Placentia Bay leg: 1.1 km instead of 550 m; a 70 km coastal hop with a
+  3° margin: 220 m instead of 110 m and a channel that had to be refined).
+  The world is now drawn at the size the budget allows, and the band along
+  the corridor (its own box plus 1°) is drawn again at the size that band
+  alone would get, as tiled patches the land test already looks up first.
+  Short legs, whose world is the band, are untouched. The progress log
+  names both cell sizes.
 
 - An open stretch ending where the leg joins the chart mesh no longer
   stalls when that point lies up a channel the search's straight moves

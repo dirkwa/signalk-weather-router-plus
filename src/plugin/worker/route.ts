@@ -895,8 +895,21 @@ export async function route(
       drawbridges: request.drawbridges ?? cfg.routing.drawbridges,
       bridgeWaitS: cfg.routing.bridgeWaitS,
       allowCanals: cfg.routing.allowCanals,
-      landFor: b =>
-        landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles).withBuffer(cfg.routing.landBufferM).withAvoid(avoid),
+      landFor: (b, band) => {
+        const m = landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles).withBuffer(cfg.routing.landBufferM);
+        // The band along the route at its own cell size inside the coarser world (LandMask.refineBand): on the
+        // buffered mask, so the patches keep the buffer and are not lost with the unbuffered cached one.
+        if (band) {
+          const t = Date.now();
+          const r = m.refineBand(band, cfg.routing.landRasterMaxCells);
+          if (r)
+            st.log(
+              'info',
+              `land mask: the leg's band drawn at ${r.resolutionDeg}° in ${r.patches} patch(es) inside the ${m.resolutionDeg}° search area, ${Date.now() - t} ms`
+            );
+        }
+        return m.withAvoid(avoid);
+      },
       landBufferM: cfg.routing.landBufferM,
       stages,
       propagator: {

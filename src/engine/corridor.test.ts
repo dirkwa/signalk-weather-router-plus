@@ -300,6 +300,39 @@ test('corridor: a passage the base raster closes is refined locally and verified
   assert.ok(cor.bbox.south <= -6 && cor.bbox.north >= 6);
 });
 
+test("corridor: landFor gets the world and, inside it, the corridor's band", () => {
+  const g = grid();
+  const asked: {
+    box: { west: number; east: number; south: number; north: number };
+    band?: { west: number; east: number; south: number; north: number };
+  }[] = [];
+  const cor = planCorridor(
+    g,
+    [
+      [170, -6],
+      [170, 6],
+    ],
+    {
+      stages: 20,
+      fanHalfDeg: 60,
+      landFor: (b, band) => {
+        asked.push({ box: b, band });
+        return LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.01 });
+      },
+    }
+  );
+  assert.ok(asked.length >= 1);
+  const { box, band } = asked[0];
+  assert.ok(band, 'the band is passed');
+  // The band is the corridor plus the 1° margin; the world is wider by the 60° sweep's reach over 1,330 km, about 10°.
+  assert.ok(band!.west >= 168.9 && band!.east <= 171.1 && band!.south <= -6 && band!.north >= 6, JSON.stringify(band));
+  // Widths the short way round: the world's east edge wraps past 180°.
+  const width = (b: { west: number; east: number }): number => (((b.east - b.west) % 360) + 360) % 360;
+  assert.ok(width(box) > width(band!) + 16 && box.south < band!.south - 8 && box.north > band!.north + 8, JSON.stringify(box));
+  assert.deepEqual(cor.band, band);
+  assert.deepEqual(cor.bbox, box);
+});
+
 test('corridor: a passage closed on the raster even at the finest patch is blocked and routed around', () => {
   const g = buildWaterGrid(COAST2, { region: { west: 160, east: 180, south: -10, north: 10 } });
   // The boom channel at lon 172.5 is open on the grid (the boom is thinner than a fine cell).

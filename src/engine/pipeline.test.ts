@@ -101,14 +101,18 @@ test("pipeline without a water grid: the land raster's box is the sweep's reach 
     headings: number
   ): Promise<{ box: { west: number; east: number; south: number; north: number }; messages: string[] }> => {
     const boxes: { west: number; east: number; south: number; north: number }[] = [];
+    const bands: ({ west: number; east: number; south: number; north: number } | undefined)[] = [];
     const { inp, messages } = inputs(land, {
       propagator: { subsectors: 20, headings, headingIncrementDeg: 1 },
-      landFor: b => {
+      landFor: (b, band) => {
         boxes.push(b);
+        bands.push(band);
         return land;
       },
     });
     await runLegPipeline(inp, plan, 0, [0, 0.5], T0);
+    // The band is always the leg plus the 1° margin, whatever the world.
+    assert.ok(bands[0] && Math.abs(bands[0].west - -1) < 1e-9 && Math.abs(bands[0].east - 2.9) < 1e-9, JSON.stringify(bands[0]));
     return { box: boxes[0], messages };
   };
   // A 211 km leg. The 30° fan reaches 106 km, 0.95° at this latitude, under the 1° margin: the box is the leg plus 1°.

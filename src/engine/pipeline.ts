@@ -13,7 +13,7 @@
  * phase 3.5); the progress messages are the worker's.
  */
 
-import { HOUR_S, NM_M } from '../geo/units';
+import { HOUR_S, M_PER_DEG, NM_M } from '../geo/units';
 import { bboxFromLonLat, bboxHeight, bboxWidth, haversineDistanceM, type BBox } from '../geo/geodesy';
 import type { LandMask } from '../geo/landmask';
 import type { WaterGrid } from '../geo/watergrid';
@@ -52,8 +52,12 @@ export interface LegPipelineInputs {
   /** The chart mesh, when one is configured: a leg it covers is planned on it (mesh/legrun.ts) instead of the coastline search. */
   mesh?: MeshLegRunner;
   allowCanals: boolean;
-  /** The land mask for a box (the corridor's box, or the box around the leg's ends). */
-  landFor: (bbox: BBox) => LandMask;
+  /**
+   * The land mask for a box: the search's world (the corridor's box widened to the sweep's reach, corridor.ts
+   * worldBox). `band`: the corridor's own box inside it, to be drawn at the cell size it would get alone when the
+   * world is coarser (LandMask.refineBand).
+   */
+  landFor: (bbox: BBox, band?: BBox) => LandMask;
   stages: number;
   propagator: Omit<PropagatorOptions, 'stages'>;
   /** Which open-water router answers the search (engine/router.ts); default the isochrone search. */
@@ -317,7 +321,10 @@ async function chartsLeg(
   }
   // Every mesh's water is land to the coastline search (a chain on the charts alone has no open stretch, no mask).
   const mask = p.mask;
-  const coastal: LegPipelineInputs = { ...inp, landFor: b => (mask ? inp.landFor(b).withExtraLand(mask) : inp.landFor(b)) };
+  const coastal: LegPipelineInputs = {
+    ...inp,
+    landFor: (b, band) => (mask ? inp.landFor(b, band).withExtraLand(mask) : inp.landFor(b, band)),
+  };
   if (p.kind === 'open') return openWaterLeg(coastal, plan, legIndex, legStart, legDeparture, tag, null, false, box);
   const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
   // An open stretch ending where the leg joins the charts: that point may lie up a channel the search cannot enter.
@@ -482,21 +489,24 @@ async function openWaterLeg(
   for (let i = 1; i < chain.length; i++) chainM += haversineDistanceM(chain[i - 1][0], chain[i - 1][1], chain[i][0], chain[i][1]);
   const fan = fanHalfDeg(inp.propagator);
   let bbox: BBox;
+  let band: BBox;
   let reachM: number;
   if (corridor) {
     bbox = corridor.bbox;
+    band = corridor.band;
     reachM = corridor.reachM;
   } else if (area) {
+    band = area;
     bbox = worldBox(area, chainM, fan, CORRIDOR_MARGIN_DEG);
     reachM = searchReachM(chainM, fan);
   } else {
-    const near = bboxFromLonLat(
+    band = bboxFromLonLat(
       chain.map(p => p[0]),
       chain.map(p => p[1]),
       CORRIDOR_MARGIN_DEG
     );
-    if (bboxWidth(near) > 120 || bboxHeight(near) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
-    bbox = worldBox(near, chainM, fan, CORRIDOR_MARGIN_DEG);
+    if (bboxWidth(band) > 120 || bboxHeight(band) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
+    bbox = worldBox(band, chainM, fan, CORRIDOR_MARGIN_DEG);
     reachM = searchReachM(chainM, fan);
   }
   progress(
@@ -504,7 +514,17 @@ async function openWaterLeg(
     0,
     `${tag}search area: {angle:${bboxWidth(bbox) * (Math.PI / 180)}} × {angle:${bboxHeight(bbox) * (Math.PI / 180)}}; the heading sweep (±{angle:${fan * (Math.PI / 180)}}) can reach {distance:${reachM.toFixed(0)}} either side of the leg's line`
   );
-  const land = corridor ? corridor.land : inp.landFor(bbox);
+  const land = corridor ? corridor.land : inp.landFor(bbox, band);
+  {
+    // The coast's cell size: over the search area, and along the leg's band where that is drawn finer.
+    const finest = land.patches.reduce((a, p) => Math.min(a, p.resolutionDeg), land.resolutionDeg);
+    progress(
+      0,
+      0,
+      `${tag}land raster: cells of {length:${Math.round(land.resolutionDeg * M_PER_DEG)}} over the search area` +
+        (finest < land.resolutionDeg ? `, {length:${Math.round(finest * M_PER_DEG)}} along the leg` : '')
+    );
+  }
   if (shouldCancel()) throw new RouteCancelled();
   // Forecast and SMOC areas per leg (measured on brain: the same time as
   // one area for all legs, and at most the same memory).
