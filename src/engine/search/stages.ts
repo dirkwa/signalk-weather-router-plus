@@ -47,6 +47,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         `auto via at ${g.name ?? 'a narrow passage'}, width ${((g.widthM ?? 0) / 1000).toFixed(1)} km (disc radius ${(g.radiusM / 1000).toFixed(1)} km)`
       );
   }
+  // The start carries how the boat arrives there (the leg before's last move), so its first move pays for a tack
+  // like every other move (propose.ts); at the route's start nothing came before and no first move is a tack.
   const stages: Candidate[][] = [
     [
       {
@@ -57,8 +59,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         costS: 0,
         parentIdx: -1,
         sogMs: 0,
-        cogDeg: 0,
-        mode: 'motoring',
+        cogDeg: args.arriving?.cogDeg ?? 0,
+        mode: args.arriving?.mode ?? 'motoring',
         sailingS: 0,
         motoringS: 0,
         viaCount: startViaCount,

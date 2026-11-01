@@ -6,6 +6,7 @@
 
 import { haversineBearing, haversineDistanceM } from '../geo/geodesy';
 import { twaFromHeading } from '../geo/angles';
+import type { LegArrival } from './legsim';
 
 export type Mode = 'sailing' | 'motoring';
 
@@ -177,6 +178,17 @@ export interface LegDepth {
 
 export interface DepthCheck {
   legs: LegDepth[];
+}
+
+/** How the boat arrives at `cur` from `prev`: the course between them and `cur`'s mode (legsim.ts LegArrival, for the tack charge of the move after). */
+export function arrivalInto(prev: { lon: number; lat: number }, cur: { lon: number; lat: number; mode: Mode }): LegArrival {
+  return { cogDeg: haversineBearing(prev.lon, prev.lat, cur.lon, cur.lat), mode: cur.mode };
+}
+
+/** The arrival at a route's last waypoint (null for a route of one point): what the next leg's first move is charged against. */
+export function routeArrival(route: Pick<Route, 'waypoints'>): LegArrival | null {
+  const w = route.waypoints;
+  return w.length >= 2 ? arrivalInto(w[w.length - 2], w[w.length - 1]) : null;
 }
 
 /** Recompute cog / twa / sog on every waypoint from the final geometry. */

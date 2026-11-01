@@ -11,7 +11,7 @@ import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../..
 import { norm360, twaFromHeading } from '../../geo/angles';
 import { DEG, NM_M } from '../../geo/units';
 import type { CurrentSource, WindSource } from '../environment';
-import { simulateLegTime, type LegSimResult, type ModePolicy, type SimOptions, DEFAULT_TACK_PENALTY_S } from '../legsim';
+import { simulateLegTime, tackChargeS, type LegSimResult, type ModePolicy, type SimOptions } from '../legsim';
 import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
 import { cellOf, LandMask, type CellMask } from '../../geo/landmask';
@@ -129,7 +129,7 @@ function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Cand
     const sim = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), lon, lat, vessel, polar, wind, current, simOpts);
     if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) return null;
     lengthM += haversineDistanceM(from.lon, from.lat, lon, lat);
-    from = hopCandidate(from, lon, lat, sim);
+    from = hopCandidate(from, lon, lat, sim, hopCharge(ctx, from, lon, lat, sim));
     approach.push(from);
   }
   progress(
@@ -140,20 +140,31 @@ function waterApproach(ctx: SearchContext, stages: Candidate[][]): { bestC: Cand
   return { bestC, stageOfBest, approach };
 }
 
-/** The candidate at the end of a simulated straight hop from `from` to (lon, lat). */
-function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResult): Candidate {
+/**
+ * The tack penalty a straight hop from `from` to (lon, lat) owes (legsim.ts tackChargeS): the wind where the hop
+ * starts, `from`'s course and mode against the hop's. The same rule as the stage sweep (propose.ts), so a final hop,
+ * a beat's legs and the water approach pay for a tack as every other move does.
+ */
+function hopCharge(ctx: SearchContext, from: Candidate, lon: number, lat: number, sim: LegSimResult): number {
+  const [, wd] = ctx.wind.at(from.lon, from.lat, new Date(from.timeMs));
+  return tackChargeS(from, wd, haversineBearing(from.lon, from.lat, lon, lat), sim.dominantMode === 'sailing', ctx.simOpts);
+}
+
+/** The candidate at the end of a simulated straight hop from `from` to (lon, lat), `chargeS` of tack penalty added (time, cost and sailing seconds). */
+function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResult, chargeS: number): Candidate {
   const d = haversineDistanceM(from.lon, from.lat, lon, lat);
+  const secs = sim.seconds + chargeS;
   return {
     lon,
     lat,
-    timeMs: from.timeMs + sim.seconds * 1000,
-    elapsedS: from.elapsedS + sim.seconds,
-    costS: from.costS + sim.seconds + sim.penaltySeconds,
+    timeMs: from.timeMs + secs * 1000,
+    elapsedS: from.elapsedS + secs,
+    costS: from.costS + secs + sim.penaltySeconds,
     parentIdx: -1,
-    sogMs: d / sim.seconds,
+    sogMs: d / secs,
     cogDeg: haversineBearing(from.lon, from.lat, lon, lat),
     mode: sim.dominantMode === 'sailing' ? 'sailing' : 'motoring',
-    sailingS: sim.sailingSeconds,
+    sailingS: sim.sailingSeconds + chargeS,
     motoringS: sim.motoringSeconds,
     viaCount: from.viaCount,
     viaIdxs: [],
@@ -224,18 +235,15 @@ export function beatToWindward(
       if (cross[0] || cross[1]) continue;
       const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(s1.seconds) || s1.seconds <= 0) continue;
-      const tack = hopCandidate(from, tLon, tLat, s1);
-      // The beat's one tack costs the penalty, in time and in cost.
-      const tackS = simOpts.tackPenaltyS ?? DEFAULT_TACK_PENALTY_S;
-      tack.timeMs += tackS * 1000;
-      tack.elapsedS += tackS;
-      tack.costS += tackS;
-      tack.sailingS += tackS; // time spent sailing: the totals must add up
+      // Each leg of the beat pays for its tack by the one rule (hopCharge): the first against the course the branch
+      // arrived on (so the order that keeps the boat on its tack is cheaper), the second against the first.
+      const tack = hopCandidate(from, tLon, tLat, s1, hopCharge(ctx, from, tLon, tLat, s1));
       const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
-      // Time plus comfort cost: with a comfort weight the beat avoids the rougher tack.
-      const total = s1.seconds + s1.penaltySeconds + s2.seconds + s2.penaltySeconds;
-      if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
+      const final = hopCandidate(tack, gLon, gLat, s2, hopCharge(ctx, tack, gLon, gLat, s2));
+      // Time, tack penalties and comfort cost: with a comfort weight the beat avoids the rougher tack.
+      const total = final.costS - from.costS;
+      if (!best || total < best.total) best = { tack, final, d1: o.dFirst, d2: o.dSecond, total };
     }
   }
   return best;
@@ -304,7 +312,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   const planFor = (c: Candidate) => {
     const hopEnd = hopEndFor(c);
     // arrivalS: the real arrival (reported); costS: arrival plus comfort cost (compared).
-    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS, costS: c.costS };
+    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, chargeS: 0, arrivalS: c.elapsedS, costS: c.costS };
     if (!snapToExact) {
       const cross = ctx.landMask.legsCrossLandBulk(
         Float64Array.of(c.lon),
@@ -318,13 +326,24 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       }
     }
     const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy);
-    if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS, costS: beat.final.costS };
+    if (beat) return { hopEnd, beat, sim: null, chargeS: 0, arrivalS: beat.final.elapsedS, costS: beat.final.costS };
     const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
     if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) {
       fails.set(c, sim.reason ?? 'no_speed');
       return null;
     }
-    return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds, costS: c.costS + sim.seconds + sim.penaltySeconds };
+    // The straight hop's tack penalty, when it puts the wind on the other side of the boat from the branch's last
+    // course: in the arrival and in the cost the branches are ranked on, so a branch is not chosen for a final tack
+    // it does not pay for.
+    const chargeS = hopCharge(ctx, c, hopEnd[0], hopEnd[1], sim);
+    return {
+      hopEnd,
+      beat: null,
+      sim,
+      chargeS,
+      arrivalS: c.elapsedS + sim.seconds + chargeS,
+      costS: c.costS + sim.seconds + chargeS + sim.penaltySeconds,
+    };
   };
   type FinalPlan = NonNullable<ReturnType<typeof planFor>>;
   const plans = new Map<Candidate, FinalPlan>();
@@ -430,7 +449,14 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         );
       }
       const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);
-      if (legDistFinal > 0) finalCand = hopCandidate(bestC, hLon, hLat, simFinal);
+      if (legDistFinal > 0)
+        finalCand = hopCandidate(
+          bestC,
+          hLon,
+          hLat,
+          simFinal,
+          bestPlan && bestPlan.sim ? bestPlan.chargeS : hopCharge(ctx, bestC, hLon, hLat, simFinal)
+        );
     }
   }
   if (!snapToExact) {

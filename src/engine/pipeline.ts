@@ -33,7 +33,7 @@ import { fanHalfDeg } from './search/types';
 import { NoWind, type CurrentSource } from './environment';
 import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
-import type { LimitMode, ModePolicy } from './legsim';
+import type { LegArrival, LimitMode, ModePolicy } from './legsim';
 import { stitchLegParts } from './mesh/handover';
 import { isRefusal, type LegReach, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
 import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG, type MeshRules } from './mesh/route';
@@ -41,7 +41,7 @@ import { legLabel, type LegPlan } from './multileg';
 import { DEFAULT_ROUTER, makeRouter, type RouterKind } from './router';
 import { enrichLegRanges, enrichWaypoints, RouteCancelled, ViasNotCrossedError, type PropagatorOptions } from './propagator';
 import type { ProgressFn } from './progress';
-import { recomputePerWaypointMetadata, type Route, type StageFront } from './route';
+import { recomputePerWaypointMetadata, routeArrival, type Route, type StageFront } from './route';
 import { limitWarnings, rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from './smoother';
 
 export type { LegWind } from './horizon';
@@ -132,6 +132,8 @@ async function meshLeg(
   legStart: [number, number],
   legDeparture: Date,
   tag: string,
+  /** How the boat arrives at the leg's start (the leg before's last move); null at the route's start. */
+  arriving: LegArrival | null,
   /** A leg inside one mesh: its reach on the rough cut, when the runner offers one (part 4); a stretch of a longer leg has none. */
   useReach = false,
   /** The mesh to plan it on (the runner's id from its plan); absent: the one holding the leg's points. */
@@ -213,6 +215,7 @@ async function meshLeg(
       bridgeWaitS: inp.bridgeWaitS ?? 0,
       reach,
       ...(meshId ? { meshId } : {}),
+      arriving,
       progress,
       shouldCancel,
     });
@@ -241,7 +244,12 @@ export async function runLegPipeline(
   plan: LegPlan,
   legIndex: number,
   legStart: [number, number],
-  legDeparture: Date
+  legDeparture: Date,
+  /**
+   * How the boat arrives at the leg's start: the leg before's last move (its course and mode), so a first move that
+   * puts the wind on the other side is charged the tack penalty like every other move; null at the route's start.
+   */
+  arriving: LegArrival | null = null
 ): Promise<Route> {
   const { multi } = inp;
   const legEnd = plan.end;
@@ -264,18 +272,18 @@ export async function runLegPipeline(
     );
     if (inp.mesh.meets(box)) {
       if (bboxWidth(box) > 120 || bboxHeight(box) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
-      if (plan.vias.length === 0) return chartsLeg(inp, plan, legIndex, legStart, legDeparture, tag, box);
+      if (plan.vias.length === 0) return chartsLeg(inp, plan, legIndex, legStart, legDeparture, tag, box, arriving);
       if (inp.mesh.covers(chain)) {
-        const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true);
+        const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, arriving, true);
         if (!isRefusal(mr)) return mr;
         // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
         throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
       }
-      return circlesLeg(inp, plan, legIndex, legStart, legDeparture);
+      return circlesLeg(inp, plan, legIndex, legStart, legDeparture, arriving);
     }
   }
   const c = inp.waterGrid ? corridorFor(inp, chain, tag) : { corridor: null, fallback: false };
-  return openWaterLeg(inp, plan, legIndex, legStart, legDeparture, tag, c.corridor, c.fallback);
+  return openWaterLeg(inp, plan, legIndex, legStart, legDeparture, tag, c.corridor, c.fallback, arriving);
 }
 
 /**
@@ -292,7 +300,8 @@ async function chartsLeg(
   legStart: [number, number],
   legDeparture: Date,
   tag: string,
-  box: BBox
+  box: BBox,
+  arriving: LegArrival | null
 ): Promise<Route> {
   const { progress, shouldCancel } = inp;
   const r = meshRulesFor(inp.vessel);
@@ -314,7 +323,7 @@ async function chartsLeg(
   if (shouldCancel()) throw new RouteCancelled();
   if (isRefusal(p)) throw new RouteError(p.refused);
   if (p.kind === 'one-mesh') {
-    const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true, p.mesh);
+    const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, arriving, true, p.mesh);
     if (!isRefusal(mr)) return mr;
     // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
     throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
@@ -325,29 +334,43 @@ async function chartsLeg(
     ...inp,
     landFor: (b, band) => (mask ? inp.landFor(b, band).withExtraLand(mask) : inp.landFor(b, band)),
   };
-  if (p.kind === 'open') return openWaterLeg(coastal, plan, legIndex, legStart, legDeparture, tag, null, false, box);
+  if (p.kind === 'open') return openWaterLeg(coastal, plan, legIndex, legStart, legDeparture, tag, null, false, arriving, box);
   const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
   // An open stretch ending where the leg joins the charts: that point may lie up a channel the search cannot enter.
   const joinAt = (end: [number, number]): LegPlan => ({ ...exactAt(end), endApproach: 'water' });
   const where = (q: [number, number]): string => `${q[1].toFixed(4)}, ${q[0].toFixed(4)}`;
   const parts: Route[] = [];
   let at = legDeparture;
+  // Each stretch starts as the one before ended: at its time, on its last course.
+  let from = arriving;
   for (let k = 0; k < p.stretches.length; k++) {
     const st = p.stretches[k];
     const sub = k === p.stretches.length - 1 ? plan : exactAt(st.to);
     let part: Route;
     if (st.kind === 'mesh') {
-      const mr = await meshLeg(inp, sub, legIndex, st.from, at, tag, false, st.mesh);
+      const mr = await meshLeg(inp, sub, legIndex, st.from, at, tag, from, false, st.mesh);
       if (isRefusal(mr))
         throw new RouteError(
           `the chart mesh cannot take the leg's stretch on the charts from ${where(st.from)} to ${where(st.to)}: ${mr.refused}`
         );
       part = mr;
     } else
-      part = await openWaterLeg(coastal, k === p.stretches.length - 1 ? sub : joinAt(st.to), legIndex, st.from, at, tag, null, false, box);
+      part = await openWaterLeg(
+        coastal,
+        k === p.stretches.length - 1 ? sub : joinAt(st.to),
+        legIndex,
+        st.from,
+        at,
+        tag,
+        null,
+        false,
+        from,
+        box
+      );
     inp.releaseAreas?.();
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;
+    from = routeArrival(part) ?? from;
   }
   return joinParts(parts);
 }
@@ -362,22 +385,25 @@ async function circlesLeg(
   plan: LegPlan,
   legIndex: number,
   legStart: [number, number],
-  legDeparture: Date
+  legDeparture: Date,
+  arriving: LegArrival | null
 ): Promise<Route> {
   const parts: Route[] = [];
   let from = legStart;
   let at = legDeparture;
+  let how = arriving;
   for (let k = 0; k <= plan.vias.length; k++) {
     const v = plan.vias[k];
     const piece: LegPlan = v
       ? { ...plan, vias: [], end: [v.lon, v.lat], arrivalRadiusM: v.radiusM, snapToExact: false }
       : { ...plan, vias: [] };
-    const r = await runLegPipeline(inp, piece, legIndex, from, at);
+    const r = await runLegPipeline(inp, piece, legIndex, from, at, how);
     const last = r.waypoints[r.waypoints.length - 1];
     if (v) last.role = 'via';
     parts.push(r);
     from = [last.lon, last.lat];
     at = last.time;
+    how = routeArrival(r) ?? how;
   }
   return joinParts(parts);
 }
@@ -476,6 +502,8 @@ async function openWaterLeg(
   tag: string,
   corridor: Corridor | null,
   corridorFallback: boolean,
+  /** How the boat arrives at the leg's start (the leg before's last move); null at the route's start. */
+  arriving: LegArrival | null,
   /** The area, when the caller fixed it (a leg's coastline part beyond the charts: the box its land mask was made for). */
   area?: BBox
 ): Promise<Route> {
@@ -553,6 +581,7 @@ async function openWaterLeg(
     limitAvoidStrength: inp.sim.limitAvoidStrength,
     comfortWeight: inp.sim.comfortWeight,
     tackPenaltyS: inp.sim.tackPenaltyS,
+    arriving,
     forecastEndMs: legWind ? legWind.validRange[1].getTime() : undefined,
     simStepM: inp.sim.simStepM,
     vias: vias.length ? vias : undefined,
@@ -604,8 +633,10 @@ async function openWaterLeg(
           maxSwhMode: legArgs.maxSwhMode,
           limitAvoidStrength: legArgs.limitAvoidStrength,
           comfortWeight: legArgs.comfortWeight,
+          tackPenaltyS: legArgs.tackPenaltyS,
         },
         tolerance: inp.smootherTolerance,
+        arriving,
       })
     : 0;
   if (nSm) r.smootherDrops = nSm;

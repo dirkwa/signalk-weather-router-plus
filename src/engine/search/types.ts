@@ -9,7 +9,7 @@
 
 import type { LandTest } from '../../geo/landmask';
 import type { CurrentSource, WindSource } from '../environment';
-import type { LimitMode, ModePolicy, SimOptions } from '../legsim';
+import type { LegArrival, LimitMode, ModePolicy, SimOptions } from '../legsim';
 import type { Route, StageFront } from '../route';
 import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
@@ -81,6 +81,12 @@ export interface ComputeRouteArgs {
   sailThreshMs?: number;
   /** Seconds lost per tack or gybe (default DEFAULT_TACK_PENALTY_S). */
   tackPenaltyS?: number;
+  /**
+   * How the boat arrives at `start`: the last move of the leg before (legsim.ts LegArrival), so a first move that
+   * puts the wind on the other side is charged the tack penalty like every other move. Absent or null: the route's
+   * start, nothing came before.
+   */
+  arriving?: LegArrival | null;
   simStepM?: number;
   /**
    * Stop as soon as a candidate is within this distance of the end (rule

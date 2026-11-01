@@ -20,9 +20,9 @@ import { NoWind, type CurrentSource } from '../environment';
 import { ExperimentalPropagator } from '../experimental/propagator';
 import { forecastHorizonNote, type LegWind } from '../horizon';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
-import { recomputePerWaypointMetadata } from '../route';
+import { recomputePerWaypointMetadata, routeArrival } from '../route';
 import { limitWarnings, rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../smoother';
-import type { LegSimResult, ModePolicy, SimOptions } from '../legsim';
+import type { LegArrival, LegSimResult, ModePolicy, SimOptions } from '../legsim';
 import type { LegPlan } from '../multileg';
 import { RouteCancelled, type PropagatorOptions } from '../propagator';
 import type { ProgressFn } from '../progress';
@@ -81,6 +81,8 @@ export interface MeshLegInputs {
   bridgeWaitS: number;
   wind: LegWind | null;
   current: CurrentSource;
+  /** How the boat arrives at the leg's start (the leg before's last move); null or absent at the route's start. */
+  arriving?: LegArrival | null;
   progress: ProgressFn;
   shouldCancel: () => boolean;
   onFrontier?: (front: StageFront) => void;
@@ -142,6 +144,9 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
    */
   // Why the last walk along the mesh route could not be made (routeFromMeshPath), for the refusal's words.
   const stuck: { reason?: LegSimResult['reason'] } = {};
+  // How the boat arrives at the stretch being planned: the stretch before's last move (the leg before's at the first),
+  // so a first move that puts the wind on the other side pays the tack penalty like every other move.
+  let arriving: LegArrival | null = inp.arriving ?? null;
   const alongMesh = (seg: MeshSegment, pts: [number, number][], at: Date, label: string, lenM: number): Route | null => {
     const sailed = seg.type === 'open' ? inp.sim.modePolicy === 'sail_max' && inp.polar !== null : sailOnly;
     if (sailed) {
@@ -152,6 +157,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
         wind: inp.wind ?? undefined,
         current,
         sim: inp.sim,
+        arriving,
         who: label,
         advice: 'raise Min sail speed so that stretch is motored, or route under motor',
         onProgress: (s: number, tot: number, m: string) => progress(s, tot, `${label}: ${m}`),
@@ -165,7 +171,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     }
     const policy: ModePolicy = seg.type === 'open' ? inp.sim.modePolicy : 'motor';
     stuck.reason = undefined;
-    const part = routeFromMeshPath(pts, at, inp.vessel, inp.polar, wind, current, { ...inp.sim, modePolicy: policy }, stuck);
+    const part = routeFromMeshPath(pts, at, inp.vessel, inp.polar, wind, current, { ...inp.sim, modePolicy: policy }, stuck, arriving);
     if (part)
       progress(
         0,
@@ -216,6 +222,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
           limitAvoidStrength: inp.sim.limitAvoidStrength,
           comfortWeight: inp.sim.comfortWeight,
           tackPenaltyS: inp.sim.tackPenaltyS,
+          arriving,
           forecastEndMs: inp.wind ? inp.wind.validRange[1].getTime() : undefined,
           simStepM: inp.sim.simStepM,
           arrivalRadiusM: last ? plan.arrivalRadiusM : undefined,
@@ -243,6 +250,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
               current,
               sim: inp.smootherSimStepM === undefined ? inp.sim : { ...inp.sim, simStepM: inp.smootherSimStepM },
               tolerance: inp.smootherTolerance,
+              arriving,
             })
           : 0;
         if (nSm) part.smootherDrops = (part.smootherDrops ?? 0) + nSm;
@@ -285,6 +293,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     }
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;
+    arriving = routeArrival(part) ?? arriving;
     // The tiles this stretch's search and layout read go; the next stretch reads its own.
     land.release?.();
   }

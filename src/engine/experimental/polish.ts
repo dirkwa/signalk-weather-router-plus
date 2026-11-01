@@ -40,12 +40,18 @@ export interface PolishResult {
 }
 
 /**
- * `timeLeg(a, b)` sets b's time (and mode) from a's and returns the leg's
+ * `timeLeg(a, b, prev)` sets b's time (and mode) from a's and returns the leg's
  * cost beyond its time (seconds: the comfort cost and the surcharge for
  * time over a limit set to avoid; 0 without either), or null when the leg
- * cannot be sailed. The waypoints are moved and re-timed in place.
+ * cannot be sailed. `prev` is the waypoint before a (null at the first), so
+ * the leg's tack penalty against the course into a is charged as it is
+ * everywhere else. The waypoints are moved and re-timed in place.
  */
-export function crossTrackPolish(wps: Waypoint[], land: LandTest, timeLeg: (a: Waypoint, b: Waypoint) => number | null): PolishResult {
+export function crossTrackPolish(
+  wps: Waypoint[],
+  land: LandTest,
+  timeLeg: (a: Waypoint, b: Waypoint, prev: Waypoint | null) => number | null
+): PolishResult {
   const n = wps.length;
   const res: PolishResult = { passes: 0, moved: 0, gainedS: 0 };
   if (n < 3) return res;
@@ -53,7 +59,7 @@ export function crossTrackPolish(wps: Waypoint[], land: LandTest, timeLeg: (a: W
   const costFrom = (list: Waypoint[], k: number): { arrival: number; cost: number } => {
     let penaltyS = 0;
     for (let i = k; i < list.length; i++) {
-      const p = timeLeg(list[i - 1], list[i]);
+      const p = timeLeg(list[i - 1], list[i], i >= 2 ? list[i - 2] : null);
       if (p === null) return { arrival: Infinity, cost: Infinity };
       penaltyS += p;
     }

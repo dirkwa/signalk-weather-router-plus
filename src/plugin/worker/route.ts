@@ -10,6 +10,7 @@ import { ACTIVE_POLAR_TOKEN, managedDiagram, type ManagedPolar } from '../manage
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
+import type { LegArrival } from '../../engine/legsim';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { boundaryFile, coarseFile, coarseRulesOf, joinsFile, markCoarseUsed, withBuildLock } from '../meshcoarse';
@@ -314,6 +315,7 @@ function meshLegRunner(
           bridgeWaitS: a.bridgeWaitS,
           boundaryFile: boundaryFile(map),
           ...(a.reach ? { aims: a.reach.aims } : {}),
+          arriving: a.arriving ?? null,
           forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
           regional:
             useForecast && request.wind_model !== 'ecmwf'
@@ -873,9 +875,9 @@ export async function route(
       st.send({ type: 'forecast-memory', memory: { ...st.forecastMemory } });
     };
 
-    const legOne = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
+    const legOne = async (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> => {
       try {
-        return await legRoute(plan, legStart, legDeparture);
+        return await legRoute(plan, legStart, legDeparture, arriving);
       } catch (err) {
         if (multi && err instanceof Error && !(err instanceof RouteCancelled) && !shouldCancel())
           err.message = `${legLabel(plan)}: ${err.message}`;
@@ -949,12 +951,12 @@ export async function route(
       onFrontier: (leg, front) => st.send({ type: 'frontier', id, leg, ...compactFront(front) }),
       log: m => st.log('info', `job ${id}: ${m}`),
     };
-    const legRoute = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
-      runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
+    const legRoute = (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> =>
+      runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture, arriving);
 
     // Repair detours (finalDepthCheck): the blocked segment routed again with the same leg pipeline, sail
     // threshold 0, so the detour sails and motors only where sailing cannot move the boat (the owner's decision,
-    // 2026-10-15).
+    // 2026-10-15). The boat arrives at the detour's start as the route's waypoint says (its course and mode).
     const detourPipeline: LegPipelineInputs = { ...pipeline, sim: { ...pipeline.sim, sailThreshMs: 0 } };
     let detourCounter = 0;
     const detour = (a: Waypoint, b: Waypoint): Promise<Route> =>
@@ -963,7 +965,8 @@ export async function route(
         { index: 0, lastIndex: 0, count: 1, vias: [], end: [b.lon, b.lat], snapToExact: true },
         1000 + detourCounter++,
         [a.lon, a.lat],
-        a.time
+        a.time,
+        { cogDeg: a.cogDeg, mode: a.mode }
       );
 
     const t = Date.now();

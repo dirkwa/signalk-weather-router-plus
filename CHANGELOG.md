@@ -32,6 +32,24 @@ uses [Semantic Versioning](https://semver.org/).
   alone would get, as tiled patches the land test already looks up first.
   Short legs, whose world is the band, are untouched. The progress log
   names both cell sizes.
+- **Every tack costs the tack penalty, wherever it happens.** Only the
+  search's stage moves charged it. The final hop to the destination (or
+  to the circle), the two legs of a final beat against the course the
+  branch arrived on, the moves of a water approach at a chart's edge, the
+  refined router's laid-out tacks and its polish, the shortcut smoother's
+  legs, a walk along a chart-mesh route, and the first move of a leg after
+  the leg before it (a waypoint, a mesh stretch, a repair detour) did not:
+  a dead-upwind beat whose one tack was its final hop arrived at the same
+  time with a penalty of 0 and of 1,800 s, and the branch was chosen for a
+  tack it did not pay for. The refined router charged one penalty per
+  laid-out piece whatever its heading, the first from the start included,
+  and none at the joins between pieces (on a 111 km beat: 12 charged, 23
+  sailed). One rule now applies to every move timed after another (the
+  course and mode the boat arrived on, the wind where the move starts, the
+  move's course and mode): in the arrival time, in the sailing time, and
+  in the search's and the polish's choices. Sailing routes that tack on
+  their final hop arrive later by the penalty (30 s by default); the
+  refined router's beats are timed by the tacks they sail.
 
 - An open stretch ending where the leg joins the chart mesh no longer
   stalls when that point lies up a channel the search's straight moves

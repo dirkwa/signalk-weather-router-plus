@@ -37,9 +37,10 @@
  */
 
 import { haversineDistanceM } from '../geo/geodesy';
+import type { LegArrival } from './legsim';
 import { ViasNotCrossedError } from './propagator';
 import type { ProgressFn } from './progress';
-import { recomputePerWaypointMetadata, type Route, type RouteWarning } from './route';
+import { recomputePerWaypointMetadata, routeArrival, type Route, type RouteWarning } from './route';
 
 export type Precision = 'precise' | 'approximate';
 
@@ -267,9 +268,11 @@ export interface MultiLegArgs {
   arrivalRadiusM?: number;
   /**
    * Route one leg from `start` (the route start, or where the previous leg
-   * ended) departing at `departure`.
+   * ended) departing at `departure`, the boat arriving there as `arriving`
+   * says (the previous leg's last move; null at the route start), so a
+   * first move that tacks is charged like every other.
    */
-  runLeg: (leg: LegPlan, start: [number, number], departure: Date) => Promise<Route> | Route;
+  runLeg: (leg: LegPlan, start: [number, number], departure: Date, arriving: LegArrival | null) => Promise<Route> | Route;
   /** Progress lines ("leg 2/4: …"); stage and total are 0 (the legs report their own). */
   onProgress?: ProgressFn;
 }
@@ -289,6 +292,7 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
   const legs: Route[] = [];
   let start: [number, number] = [args.stops[0].lon, args.stops[0].lat];
   let departure = args.departureTime;
+  let arriving: LegArrival | null = null;
   const run = async (plan: LegPlan): Promise<void> => {
     if (multi) {
       const through = plan.vias.length
@@ -298,7 +302,7 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
         `${legLabel(plan)}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${through}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the {length:${plan.arrivalRadiusM!.toFixed(0)}} circle`}`
       );
     }
-    const r = await args.runLeg(plan, start, departure);
+    const r = await args.runLeg(plan, start, departure, arriving);
     if (!r.waypoints.length) throw new Error(`${legLabel(plan)} returned no waypoints`);
     // One source per leg the plan covers (a collapsed approximate run is several legs, all from one search).
     const source = r.legSources?.[0] ?? (r.meshLeg ? 'mesh' : 'coastline');
@@ -313,6 +317,7 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
     legs.push(r);
     start = [last.lon, last.lat];
     departure = last.time;
+    arriving = routeArrival(r) ?? arriving;
   };
   for (const plan of plans) {
     if (!plan.vias.length) {

@@ -89,6 +89,37 @@ export function limitAvoidActive(opts: Pick<SimOptions, 'maxWindMs' | 'maxSwhM' 
 export const DEFAULT_TACK_PENALTY_S = 30;
 
 /**
+ * How the boat arrives somewhere: the course it was on and whether it was sailing. The move before a hop (a search
+ * candidate's parent, the waypoint before), or the last move of the previous leg at a leg's start; null where nothing
+ * came before (the route's start).
+ */
+export interface LegArrival {
+  cogDeg: number;
+  mode: 'sailing' | 'motoring';
+}
+
+/**
+ * The tack penalty a hop owes, seconds: `tackPenaltyS` when the boat arrived sailing on `before.cogDeg`, sails this
+ * hop too, and the wind (from `windDirDeg`, read where the hop starts) is on the other side of the boat on the hop's
+ * course (tackBetween); else 0. The one rule for every place that times a move after another: the stage sweep, the
+ * terminal hops, the water approach, the refined router's layout and polish, the smoother's shortcuts, a walk along a
+ * mesh route, and the first move of a leg after the leg before it. The penalty is added after the hop is timed (the
+ * hop is simulated from the time the boat arrived, as the stage sweep always did), in the time, the cost and the
+ * sailing seconds.
+ */
+export function tackChargeS(
+  before: LegArrival | null | undefined,
+  windDirDeg: number,
+  hopCogDeg: number,
+  hopSailing: boolean,
+  opts: Pick<SimOptions, 'tackPenaltyS'>
+): number {
+  const tackS = opts.tackPenaltyS ?? DEFAULT_TACK_PENALTY_S;
+  if (!(tackS > 0) || !before || before.mode !== 'sailing' || !hopSailing || !Number.isFinite(windDirDeg)) return 0;
+  return tackBetween(before.cogDeg, hopCogDeg, windDirDeg) ? tackS : 0;
+}
+
+/**
  * Is the move from heading `a` to heading `b` a tack or a gybe: the wind
  * (from `windDirDeg`) on the other side of the boat? A heading dead into
  * or dead away from the wind is on neither side and changes nothing.

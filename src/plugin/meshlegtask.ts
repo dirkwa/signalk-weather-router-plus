@@ -18,7 +18,7 @@ import { NoCurrent } from '../engine/environment';
 import { RouteError } from '../engine/errors';
 import type { LegWind } from '../engine/horizon';
 import { LayeredWind, type RegionalWind } from '../engine/layeredwind';
-import type { SimOptions } from '../engine/legsim';
+import type { LegArrival, SimOptions } from '../engine/legsim';
 import { MeshLand } from '../engine/mesh/land';
 import { isRefusal, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
 import { runMeshLeg } from '../engine/mesh/legrun';
@@ -63,6 +63,8 @@ export interface MeshLegTask {
   boundaryFile?: string;
   /** Per target after the start (route.ts runTargets), the point the rough cut aimed an approximate waypoint at. */
   aims?: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
+  /** How the boat arrives at the leg's start (the leg before's last move); null at the route's start. */
+  arriving?: LegArrival | null;
   /** The decoded run and the area to read, or null for calm wind (motor, or no forecast). */
   forecast: { runDir: string; area: BBox; params: string[] } | null;
   /** Regional runs root and the global grid spacing, or null when regional wind is off. */
@@ -133,6 +135,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     smootherSimStepM: t.smootherSimStepM,
     drawbridges: t.drawbridges,
     bridgeWaitS: t.bridgeWaitS,
+    arriving: t.arriving ?? null,
     progress,
     shouldCancel: () => false, // cancel kills the process (childtask.ts)
   };

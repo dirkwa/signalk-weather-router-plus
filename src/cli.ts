@@ -41,7 +41,7 @@ import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
 import type { Route } from './engine/route';
 import { routeToGeoJSON } from './plugin/routeformat';
-import { LIMIT_MODES, type LimitMode, type ModePolicy } from './engine/legsim';
+import { LIMIT_MODES, type LegArrival, type LimitMode, type ModePolicy } from './engine/legsim';
 import { PolarDiagram } from './vessel/polar';
 import { makeVessel } from './vessel/vessel';
 
@@ -206,8 +206,8 @@ async function main(): Promise<void> {
     shouldCancel: () => false,
     log,
   };
-  const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
-    runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
+  const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date, arriving: LegArrival | null): Promise<Route> =>
+    runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture, arriving);
   const routeT0 = Date.now();
   const route = await routeMultiLeg({
     stops,

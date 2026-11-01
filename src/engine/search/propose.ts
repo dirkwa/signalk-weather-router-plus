@@ -9,7 +9,7 @@
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing, segmentWithinDisc } from '../../geo/geodesy';
 import { norm360 } from '../../geo/angles';
-import { scoreCandidatesFromParent, DEFAULT_TACK_PENALTY_S, tackBetween } from '../legsim';
+import { scoreCandidatesFromParent, DEFAULT_TACK_PENALTY_S, tackChargeS } from '../legsim';
 import type { Candidate, SearchContext } from './types';
 import type { SkeletonGuide } from './zones';
 
@@ -102,9 +102,9 @@ export function propose(
     const bearings = new Float64Array(keep.map(i => hdg[i]));
     const dists = new Float64Array(keep.map(i => dist[i]));
     const sc = scoreCandidatesFromParent(par.lon, par.lat, new Date(par.timeMs), bearings, dists, vessel, polar, wind, current, simOpts);
-    // The tacking penalty: a move that puts the wind on the other side of
-    // the boat from the parent's heading, both under sail, costs the penalty
-    // in time and in rank (the start has no heading: no penalty).
+    // The tacking penalty (legsim.ts tackChargeS): a move that puts the wind on the other side of the boat from the
+    // parent's course, both under sail, costs the penalty in time and in rank. The wind is read once per parent, and
+    // only when a sailing parent can owe one (the route's start arrives motoring: no penalty on its first move).
     const tackS = simOpts.tackPenaltyS ?? DEFAULT_TACK_PENALTY_S;
     const [, wdPar] = tackS > 0 && par.mode === 'sailing' ? wind.at(par.lon, par.lat, new Date(par.timeMs)) : [0, NaN];
     for (let c = 0; c < keep.length; c++) {
@@ -117,8 +117,8 @@ export function propose(
       }
       const i = keep[c];
       // A tack: the penalty is time spent sailing, so it counts in the sailing time too (the totals must add up).
-      const tacked = Number.isFinite(wdPar) && sc.dominant[c] === 1 && tackBetween(par.cogDeg, hdg[i], wdPar);
-      if (tacked) secs += tackS;
+      const tackedS = tackChargeS(par, wdPar, hdg[i], sc.dominant[c] === 1, simOpts);
+      secs += tackedS;
       const legDist = haversineDistanceM(par.lon, par.lat, cLon[i], cLat[i]);
       const cand: Candidate = {
         lon: cLon[i],
@@ -130,7 +130,7 @@ export function propose(
         sogMs: legDist / secs,
         cogDeg: hdg[i],
         mode: sc.dominant[c] === 1 ? 'sailing' : 'motoring',
-        sailingS: sc.sailing[c] + (tacked ? tackS : 0),
+        sailingS: sc.sailing[c] + tackedS,
         motoringS: sc.motoring[c],
         viaCount: par.viaCount,
         viaIdxs: [],
