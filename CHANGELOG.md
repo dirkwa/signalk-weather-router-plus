@@ -59,6 +59,13 @@ uses [Semantic Versioning](https://semver.org/).
   choice now goes on to 0.02°, 0.05° and 0.1° until the budget holds; the
   band along the route keeps its own finer cells. No leg under the budget
   changes (PR #91 review).
+- **The world's longitude margin holds at its poleward edge.** The sweep's
+  reach was turned into degrees of longitude at the box's middle latitude,
+  so towards the poleward end of a long high-latitude leg the same metres
+  spanned more degrees than the margin, and a branch could meet the edge
+  there. It is now sized at the poleward edge the reach can fill; worlds
+  grow a little (the Placentia Bay leg at Maximum effort: 38.6° to about
+  54° wide, still within the cell budget) (PR #91 review).
 - **The water approach at a chart's edge walks a window, not the whole
   raster.** Its distance field took 4 bytes for every cell of the search's
   world. It now covers the box round the front and the end, padded by one

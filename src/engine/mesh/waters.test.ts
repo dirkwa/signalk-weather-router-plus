@@ -365,8 +365,10 @@ test('waterField: in open water the distance is the straight one, within the ras
   const walled = LandMask.fromPolygons([rect(1, 1, 0, 1.05, 0.9)], box, 0.05);
   const g = waterField(walled, emptyMask(walled), at(walled, 0.525, 0.125))!;
   assert.ok(g[at(walled, 1.525, 0.125)] > f[at(open, 1.125, 0.525)] + 10 * dx, 'round the wall, not through it');
-  // A pocket walled all round is not reached.
-  const pocket = LandMask.fromPolygons([rect(1, 1, 0, 2, 1), rect(2, 0, 0.5, 1, 1)], box, 0.05);
+  // Water walled off from the source is not reached: a wall at lon 1–1.2 the whole height of the box, the target in
+  // open water beyond it (until 2026-11-01 the target lay inside the wall itself, land, so Infinity proved nothing).
+  const pocket = LandMask.fromPolygons([rect(1, 1, 0, 1.2, 1), rect(2, 0, 0.5, 1, 1)], box, 0.05);
+  assert.ok(!pocket.isLand(1.525, 0.725), 'the target is water');
   const h = waterField(pocket, emptyMask(pocket), at(pocket, 0.525, 0.125))!;
   assert.equal(h[at(pocket, 1.525, 0.725)], Infinity);
 });

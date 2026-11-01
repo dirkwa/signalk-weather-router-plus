@@ -86,13 +86,18 @@ export function searchReachM(lengthM: number, fanHalfDeg: number): number {
  * or taller than the raster's box limits (the margin shrinks to fit, so a
  * long leg's world is the biggest raster the budget can hold). A short leg,
  * whose reach is under the margin, keeps today's box exactly: the coastal
- * raster stays as fine as it is.
+ * raster stays as fine as it is. The reach in degrees of longitude is taken
+ * at the poleward edge of the box the reach can fill, where a degree is
+ * shortest, so the margin holds along the whole edge (until 2026-11-01 it was
+ * taken at the base's middle latitude, and at the poleward end of a
+ * high-latitude leg the same metres spanned more degrees than the margin;
+ * PR #91 review).
  */
 export function worldBox(base: BBox, lengthM: number, fanHalfDeg: number, baseMarginDeg = 0): BBox {
   const reachM = searchReachM(lengthM, fanHalfDeg);
-  const midLat = (base.south + base.north) / 2;
   const latDeg = reachM / M_PER_DEG;
-  const lonDeg = latDeg / Math.max(0.05, Math.cos(midLat * DEG));
+  const poleLat = Math.min(90, Math.max(Math.abs(base.south - latDeg), Math.abs(base.north + latDeg)));
+  const lonDeg = latDeg / Math.max(0.05, Math.cos(poleLat * DEG));
   const w = lonOffset(base.east, base.west) || (base.east === base.west ? 0 : 360);
   const h = base.north - base.south;
   let mLon = Math.max(CORRIDOR_MARGIN_DEG, lonDeg) - baseMarginDeg;

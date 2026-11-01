@@ -427,19 +427,24 @@ test("worldBox: the search's world is the sweep's reach round the corridor, neve
   // A 70 km leg: the 30° fan reaches 35 km, under the 1° margin, so the box is the margin's (a coastal hop keeps its box).
   assert.ok(Math.abs(searchReachM(70_000, 30) - 35_000) < 1e-6);
   assert.deepEqual(worldBox(base, 70_000, 30), { west: -2, east: 2, south: -2, north: 2 });
-  // A 1,500 km leg: 750 km of reach at 30°, 6.74° at the equator, each side.
+  // A 1,500 km leg: 750 km of reach at 30°, 6.74° of latitude each side; of longitude, that reach at the poleward
+  // edge the box can reach (7.74°, where a degree is a little shorter than at the equator).
   const long = worldBox(base, 1_500_000, 30);
   const reachDeg = 750_000 / 111_194.9;
-  assert.ok(Math.abs(long.west - (-1 - reachDeg)) < 0.01 && Math.abs(long.north - (1 + reachDeg)) < 0.01, JSON.stringify(long));
+  const lonAt = (lat: number): number => reachDeg / Math.cos((lat * Math.PI) / 180);
+  assert.ok(Math.abs(long.west - (-1 - lonAt(1 + reachDeg))) < 0.01 && Math.abs(long.north - (1 + reachDeg)) < 0.01, JSON.stringify(long));
   // A 60° fan reaches sin 60° of the length; a 90° or wider fan the whole length.
   assert.ok(Math.abs(searchReachM(1_500_000, 60) - 1_500_000 * Math.sin(Math.PI / 3)) < 1e-6);
   assert.equal(searchReachM(1_500_000, 120), 1_500_000);
-  // A base that already carries the margin grows only by the rest of the reach.
+  // A base that already carries the margin grows only by the rest of the reach (in longitude to within the little
+  // its own poleward edge, 1° further out, adds).
   const carried = worldBox({ west: -2, east: 2, south: -2, north: 2 }, 1_500_000, 30, CORRIDOR_MARGIN_DEG);
-  assert.ok(Math.abs(carried.west - long.west) < 1e-9 && Math.abs(carried.north - long.north) < 1e-9);
-  // Longitude widens with the latitude: at 60° N a degree of longitude is half as long.
+  assert.ok(Math.abs(carried.north - long.north) < 1e-9 && Math.abs(carried.west - long.west) < 0.02, JSON.stringify([carried, long]));
+  // Longitude widens with the latitude, sized at the poleward edge the reach can fill (67.74° N here, not the base's
+  // middle at 60° N, where a degree of longitude is a quarter longer than at the edge).
   const north = worldBox({ west: -1, east: 1, south: 59, north: 61 }, 1_500_000, 30);
-  assert.ok(Math.abs(north.west - (-1 - reachDeg / Math.cos((60 * Math.PI) / 180))) < 0.05, JSON.stringify(north));
+  assert.ok(Math.abs(north.west - (-1 - lonAt(61 + reachDeg))) < 0.01, JSON.stringify(north));
+  assert.ok(north.west < -1 - lonAt(60), 'wider than the middle latitude would give');
   // The raster's limits hold: a 100°-wide base grows at most 10° each side, whatever the reach.
   const wide = worldBox({ west: -50, east: 50, south: -1, north: 1 }, 20_000_000, 90);
   assert.ok(Math.abs(wide.west - -60) < 1e-9 && Math.abs(wide.east - 60) < 1e-9, JSON.stringify(wide));
