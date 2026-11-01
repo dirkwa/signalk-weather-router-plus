@@ -4390,7 +4390,9 @@ function _meteoRouteChanged() {
       .then(nav => {
         const pos = _skVal(nav.position);
         const snap = {
-          lat: pos && Number.isFinite(pos.latitude) ? pos.latitude : null,
+          // A latitude past ±90° projects to NaN (EPSG:3857) and would put the
+          // view there (the first fix centres on it): no position (PR #70 review).
+          lat: pos && Number.isFinite(pos.latitude) && Math.abs(pos.latitude) <= 90 ? pos.latitude : null,
           lon: pos && Number.isFinite(pos.longitude) ? pos.longitude : null,
           sog_ms: _skNum(nav.speedOverGround),
           cog_deg: _skDeg(nav.courseOverGroundTrue),
