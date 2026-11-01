@@ -295,6 +295,13 @@ uses [Semantic Versioning](https://semver.org/).
 - The Signal K App Store lists Polar Management (`signalk-polar-management`)
   as a recommended plugin, beside signalk-internet (`signalk.recommends` in
   `package.json`).
+- **The route's progress shows where Find Route was pressed.** The phase
+  bar, what runs and Cancel sat below Clear all and the plan hint, out of
+  view on a short screen such as an iPad's (in a 1180×690 window at
+  763–801 px, measured in Chromium), so a computing route looked stuck.
+  While a route computes they now take Find Route's place, scrolled into
+  view once at the start; the text keeps to one line so the box keeps
+  its height. Find Route comes back when the job ends.
 
 ## [0.2.1-beta.1] - 2026-10-29
 
