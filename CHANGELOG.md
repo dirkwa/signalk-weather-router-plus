@@ -71,6 +71,18 @@ uses [Semantic Versioning](https://semver.org/).
   mask is compared against the polygon-built one in the tests, patches and
   buffer included); less memory, and an exact test no longer scans every
   polygon of the world (PR #91 review; docs/plans/land-mask-from-tiles.md).
+- **The search's stall rule measures progress along the water.** A front
+  that came no closer to its goal for three stages after the planned ones
+  was refused as boxed in, with "closer" measured straight through land: a
+  branch pressed against a wall a few km short of the destination set the
+  mark, the detour round the wall then counted as no progress, and the
+  rule stopped a search whose front was through the gap and closing
+  (measured 2026-11-01: a 1 km gap 33 km along a wall, 12 stages, refused;
+  the code before the sweep-aim change arrived, by 2 km of margin). The
+  distance still to go is now measured along the skeleton, the water the
+  search follows: to the nearest skeleton point, along it to the goal's
+  point, and to the goal. A truly stuck front is refused as before; the
+  refusal says "along the water" (docs/plans/stall-progress-along-water.md).
 - **A re-routed corridor gets its fine band too.** When the route raster
   closed a passage and the corridor was re-routed round it, the land mask
   was kept whenever the new corridor's world still fitted the old one, with

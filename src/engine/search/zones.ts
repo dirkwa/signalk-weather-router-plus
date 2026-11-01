@@ -37,11 +37,18 @@ export interface SkeletonGuide extends SkeletonData {
   targetForParent(idx: number, stepM: number, pLon?: number, pLat?: number): [number, number];
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   zoneKey(c: { lon: number; lat: number; viaCount: number }): string | null;
+  /**
+   * How far a candidate heading for its `viaCount`th goal still has to go, along the water: to its nearest skeleton
+   * point (within the stretch before that goal), along the skeleton to the goal's point, and from there to the goal.
+   * The straight distance without a skeleton. The stall detector's measure of progress (stages.ts): a branch against
+   * a wall a few km from the goal has the whole detour ahead of it, and the detour counts as progress.
+   */
+  remainingM(lon: number, lat: number, viaCount: number): number;
 }
 
 export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide {
   const { skeleton, skeletonCum, widths } = sk;
-  const { progress, eLon, eLat } = ctx;
+  const { progress, eLon, eLat, goals } = ctx;
   const { deltaD, candStepM } = ctx.budget;
   // ---- Narrow passages: step limits, extra stages, narrow-bin zones ------
   const nSk = skeleton ? skeleton.length : 0;
@@ -158,6 +165,25 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     }
     return [skeleton[ti].lon, skeleton[ti].lat];
   };
+  // The skeleton point each goal lies at (the vias and the end are on the skeleton: the corridor's chain, or the coarse
+  // A*'s), so the way to a goal along the water is the skeleton up to that point.
+  const goalIdx = skeleton && skeletonCum && nSk >= 2 ? goals.map(g => nearestSkeleton(g.lon, g.lat)) : [];
+  const remainingM = (lon: number, lat: number, viaCount: number): number => {
+    const gk = Math.min(viaCount, goals.length - 1);
+    const g = goals[gk];
+    if (!skeleton || !skeletonCum || nSk < 2) return haversineDistanceM(lon, lat, g.lon, g.lat);
+    const gi = goalIdx[gk];
+    // The candidate's stretch: from the goal before (the start for the first) to this goal, so a branch is never
+    // read as near a later part of the skeleton it has not reached (the far side of a crossing).
+    const from = gk > 0 ? goalIdx[gk - 1] : 0;
+    const idx = nearestSkeleton(lon, lat, Math.min(from, gi), Math.max(from, gi));
+    const along = Math.max(0, skeletonCum[gi] - skeletonCum[idx]);
+    return (
+      haversineDistanceM(lon, lat, skeleton[idx].lon, skeleton[idx].lat) +
+      along +
+      haversineDistanceM(skeleton[gi].lon, skeleton[gi].lat, g.lon, g.lat)
+    );
+  };
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   const zoneKey = (c: { lon: number; lat: number; viaCount: number }): string | null => {
     if (!zones.length || !skeleton || !widths) return null;
@@ -201,5 +227,6 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     stepFor,
     targetForParent,
     zoneKey,
+    remainingM,
   };
 }

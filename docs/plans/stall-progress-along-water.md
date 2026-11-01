@@ -1,6 +1,8 @@
 # Plan: the stall rule measures progress along the water, not through land
 
-Status: **proposed** 2026-11-01, not started. From the PR #91 review
+Status: **built** 2026-11-01 as written below (`SkeletonGuide.remainingM` in
+`zones.ts`, the detector in `stages.ts`, `src/engine/search/stall.test.ts`;
+the golden routes unchanged). From the PR #91 review
 (`src/engine/search/zones.ts:155`, 2026-11-01), which blamed the aiming
 rule; the measurement below shows the failure is the stall rule's.
 
