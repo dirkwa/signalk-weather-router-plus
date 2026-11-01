@@ -304,6 +304,13 @@ uses [Semantic Versioning](https://semver.org/).
   While a route computes they now take Find Route's place, scrolled into
   view once at the start; the text keeps to one line so the box keeps
   its height. Find Route comes back when the job ends.
+- **Best departure opens from a button beside Departure.** It was a
+  closed section under the result strip, the last thing on the Route
+  tab, below the panel's visible part on a short screen (in a 1180×690
+  window at 738 px, the view ending at 644 px, measured in Chromium). The
+  button sits on the Departure label's line, and the section opens under
+  the Departure time, where a departure is chosen. Closed, it takes no
+  room, so Find Route stays where it was.
 
 ## [0.2.1-beta.1] - 2026-10-29
 
