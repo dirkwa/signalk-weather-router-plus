@@ -1968,7 +1968,7 @@ function _smallScreen() {
 // the load (a route fitted into view) or the user has used it before the
 // fix came.
 // A plan restored from the last visit (a start or an end marker) keeps
-// the saved view instead, where that plan was left (keepSavedView; PR #70
+// the view instead, where that plan was left (keepStartView; PR #70
 // review). The page never asks the browser for its location: the
 // vessel's position comes from Signal K.
 //
@@ -2004,10 +2004,12 @@ const _userOnMap = (/** @type {Event} */ e) => {
 };
 map.getViewport().addEventListener('pointerdown', _userOnMap, { passive: true });
 map.getViewport().addEventListener('wheel', _userOnMap, { passive: true });
-// A restored plan keeps the saved view (rp-plan.js _restorePlan). Without
-// one there is nothing to keep, and the boat is the better start.
-export function keepSavedView() {
-  if (_SAVED_VIEW) _autoCentreOnVessel = false;
+// A restored plan keeps the view the page opened on (rp-plan.js
+// _restorePlan): the saved view, where the plan was left, or without one
+// the default view, the only view a plan can have been placed on then
+// (any move, the first fix's centring too, saves the view).
+export function keepStartView() {
+  _autoCentreOnVessel = false;
 }
 // The first Signal K fix of the load opens the map on the boat (rp-plan.js).
 // Not while the view is animating: something else (a route being fitted)
